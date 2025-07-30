@@ -1,16 +1,18 @@
 import os
 import time
 import sys
+import math
 from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
 from rclpy.node import Node
 import DR_init
-from od_msg.srv import SrvDepthPosition
+from hh_od_msg.msg import MsgLipsDepthPosition
+from hh_od_msg.srv import SrvDepthPosition
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
-package_path = get_package_share_directory("pick_and_place_voice")
+package_path = get_package_share_directory("feeding_voice")
 # for single robot
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
@@ -26,7 +28,7 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, trans
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, DR_MV_MOD_REL
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -39,6 +41,8 @@ class RobotController(Node):
         # :둥근_압핀: 이 작업에서는 미리 정의된 좌표 데이터베이스가 필요 없습니다.
         # self.pose_database = { ... }
         self.init_robot()
+        # Topic Subscriber
+        self.get_lips_position_subscriber = self.create_subscription(MsgLipsDepthPosition, '/lips_3d_position')
         # Service Clients
         self.get_position_client = self.create_client(SrvDepthPosition, "/get_3d_position")
         self.get_keyword_client = self.create_client(Trigger, "/get_keyword")
@@ -61,27 +65,41 @@ class RobotController(Node):
             response_message = get_keyword_future.result().message
             self.get_logger().info(f"음성 인식 키워드: '{response_message}'")
             try:
-                tools_str, destinations_str = response_message.split('/')
-                object_to_pick = tools_str.strip().split()[0]
-                place_to_go_object = destinations_str.strip().split()[0]
+                food_to_eat = response_message.strip()
+                feed_destination = 'lips'
             except (ValueError, IndexError):
                 self.get_logger().error(f"잘못된 형식의 응답입니다: '{response_message}'. '도구 / 목적지' 형식이 필요합니다.")
                 return
-            # :둥근_압핀: 1. Pick 위치 (카메라로 '사과' 찾기)
-            self.get_logger().info(f"--- Pick 대상 '{object_to_pick}' 위치 찾는 중 ---")
-            pick_pos = self.get_object_position_from_camera(object_to_pick)
+            # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
+            if food_to_eat == 'rice':
+                self.ready_to_pick_tool()
+                tool_name = 'spoon'
+                pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
+                if pick_tool_pos is None:
+                    self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
+                    return
+                amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
+                movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                mwait()
+                movel([0, 0, -70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                gripper.close_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+                movel([0, 0, 110, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                movej([0, 0, 90, 0, 90, -90], vel=VELOCITY, acc=ACC)
+            # 2. Pick 위치 (카메라로 '사과' 찾기)
+            self.get_logger().info(f"--- Pick 대상 '{food_to_eat}' 위치 찾는 중 ---")
+            pick_pos = self.get_object_position_from_camera(food_to_eat)
             if pick_pos is None:
-                self.get_logger().error(f"'{object_to_pick}'을(를) 찾지 못해 작업을 중단합니다.")
+                self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
                 return
-            # :둥근_압핀: 2. Place 위치 (카메라로 '입술' 찾기)
-            self.get_logger().info(f"--- Place 대상 '{place_to_go_object}' 위치 찾는 중 ---")
-            place_pos = self.get_object_position_from_camera(place_to_go_object)
-            if place_pos is None:
-                self.get_logger().error(f"'{place_to_go_object}'을(를) 찾지 못해 작업을 중단합니다.")
+            self.pick_food(pick_pos)
+            # 3. 먹이기 (카메라로 '입술' 찾기)
+            feed_pos = self.get_object_position_from_camera(feed_destination)
+            if feed_pos is None:
+                self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
                 return
-            # 3. Pick and Place 실행
-            self.get_logger().info(f"'{object_to_pick}'을(를) 집어 '{place_to_go_object}'로 옮깁니다.")
-            self.pick_and_place_target(pick_pos, place_pos)
+            self.feed_food(feed_pos)
             self.init_robot()
         else:
             self.get_logger().warn("키워드 인식에 실패했거나 서비스 호출에 실패했습니다.")
@@ -105,28 +123,82 @@ class RobotController(Node):
             target_pos = list(td_coord[:3]) + robot_posx[3:]
             return target_pos
         return None
+
+    def get_midpoint_of_two_objects(self, object1_name, object2_name):
+        self.get_logger().info(f"'{object1_name}'와 '{object2_name}' 두 객체의 중점 위치를 찾습니다.")
+
+        pos1 = self.get_object_position_from_camera(object1_name)
+        pos2 = self.get_object_position_from_camera(object2_name)
+        robot_posx = get_current_posx()[0]
+
+        if pos1 is None:
+            self.get_logger().warn(f"'{object1_name}'을(를) 찾을 수 없어 중점 계산을 할 수 없습니다.")
+            return None
+        
+        if pos2 is None:
+            self.get_logger().warn(f"'{object2_name}'을(를) 찾을 수 없어 중점 계산을 할 수 없습니다.")
+            return None
+
+        # 두 위치 모두 최소 3개의 구성 요소(x, y, z)를 가지고 있는지 확인합니다.
+        if len(pos1) < 3 or len(pos2) < 3:
+            self.get_logger().error("객체 위치 데이터에 충분한 3D 정보(x, y, z)가 없습니다.")
+            return None
+
+        midpoint_x = (pos1[0] + pos2[0]) / 2
+        midpoint_y = (pos1[1] + pos2[1]) / 2
+        midpoint_z = (pos1[2] + pos2[2]) / 2
+
+        midpoint_pos = [midpoint_x, midpoint_y, midpoint_z] + robot_posx[3:]
+        angle = 90 - math.atan2(pos1[1] - pos2[1], pos1[0] - pos2[0])*180/math.pi
+
+        # 로봇의 방향(robot_posx의 마지막 3개 구성 요소)을 유지해야 한다면,
+        # 이를 결합하거나 선택하는 전략이 필요합니다. 여기서는 단순하게
+        # 3D 위치만 반환합니다. robot_posx에서 방향을 사용해야 한다면,
+        # 다음과 같이 통합할 수 있습니다:
+        # midpoint_pos = [midpoint_x, midpoint_y, midpoint_z] + pos1[3:] # 또는 pos2[3:]
+
+        self.get_logger().info(f"'{object1_name}'와 '{object2_name}'의 중점: {midpoint_pos}")
+        return midpoint_pos, angle
+    
     def init_robot(self):
-        JReady = [0, 0, 90, 0, 90, 0]
+        JReady = [0, 0, 90, 0, 90, -90]
         self.get_logger().info("준비 자세로 이동합니다.")
         movej(JReady, vel=VELOCITY, acc=ACC)
         gripper.open_gripper()
         mwait()
-    def pick_and_place_target(self, pick_pos, place_pos):
+    def ready_to_pick_tool(self):
+        JPick = [40, 15, 90, 0, 75, 40]
+        movej(JPick, vel=VELOCITY, acc=ACC)
+        gripper.open_gripper()
+        mwait()
+    def ready_to_feed_robot(self):
+        JFeed = [0, 0, 90, -90, 90, -180]
+        self.get_logger().info("먹이기 자세로 이동합니다.")
+        movej(JFeed, vel=VELOCITY, acc=ACC)
+    def pick_tool(self, pick_pos):
+        pass
+    def pick_food(self, pick_pos):
         self.get_logger().info(f"Pick 위치로 이동: {pick_pos[:3]}")
         movel(pick_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.close_gripper()
-        mwait()
+        while gripper.get_status()[0]:
+            time.sleep(0.1)
         self.get_logger().info("Pick 완료.")
-        self.get_logger().info(f"Place 위치로 이동: {place_pos[:3]}")
+        JReady = [0, 0, 90, 0, 90, 0]
+        movej(JReady, vel=VELOCITY, acc=ACC)
+        self.ready_to_feed_robot()
         # :둥근_압핀: 안전을 위해 입술 근처 Z축에 오프셋을 둘 수 있습니다.
         # place_pos_safe = place_pos[:]
         # place_pos_safe[2] += 50.0 # Z축으로 5cm 위까지만 접근
         # movel(place_pos_safe, vel=VELOCITY, acc=ACC)
-        movel(place_pos, vel=VELOCITY, acc=ACC)
-        mwait()
-        self.get_logger().info("Place 완료. 그리퍼를 엽니다.")
-        gripper.open_gripper()
+        # self.get_logger().info("Place 완료. 그리퍼를 엽니다.")
+        # gripper.open_gripper()
+        # while gripper.get_status()[0]:
+        #     time.sleep(0.1)
+    def feed_food(self, feed_pos):
+        self.get_logger().info(f"Pick 위치로 이동: {feed_pos[:3]}")
+        movel(feed_pos, vel=VELOCITY, acc=ACC)
         mwait()
     def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
         R = Rotation.from_euler("ZYZ", [rx, ry, rz], degrees=True).as_matrix()

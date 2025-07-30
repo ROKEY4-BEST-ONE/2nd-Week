@@ -13,17 +13,17 @@ import numpy as np
 PACKAGE_NAME = "feeding_voice"
 PACKAGE_PATH = get_package_share_directory(PACKAGE_NAME)
 
-YOLO_MODEL_FILENAME = "best.pt"
-YOLO_CLASS_NAME_JSON = "class_name.json"
-
-YOLO_MODEL_PATH = os.path.join(PACKAGE_PATH, "resource", YOLO_MODEL_FILENAME)
-YOLO_JSON_PATH = os.path.join(PACKAGE_PATH, "resource", YOLO_CLASS_NAME_JSON)
-
 
 class YoloModel:
-    def __init__(self):
-        self.model = YOLO(YOLO_MODEL_PATH)
-        with open(YOLO_JSON_PATH, "r", encoding="utf-8") as file:
+    def __init__(self, target):
+        self.yolo_model_filename = target + ".pt"
+        self.yolo_class_name_json = target + ".json"
+
+        self.yolo_model_path = os.path.join(PACKAGE_PATH, "resource", self.yolo_model_filename)
+        self.yolo_json_path = os.path.join(PACKAGE_PATH, "resource", self.yolo_class_name_json)
+
+        self.model = YOLO(self.yolo_model_path)
+        with open(self.yolo_json_path, "r", encoding="utf-8") as file:
             class_dict = json.load(file)
             self.reversed_class_dict = {v: int(k) for k, v in class_dict.items()}
 

@@ -77,16 +77,20 @@ class ObjectDetectionNode(Node):
             data = getter()
         return data
 
-    def _pixel_to_camera_coords(self, x, y, z):
+    def _pixel_to_camera_coords(self, x, y, z, target):
         """픽셀 좌표와 intrinsics를 이용해 카메라 좌표계로 변환합니다."""
         fx = self.intrinsics['fx']
         fy = self.intrinsics['fy']
         ppx = self.intrinsics['ppx']
         ppy = self.intrinsics['ppy']
+        if target == 'apple':
+            z_offset = 60
+        else:
+            z_offset = 0
         return (
             (x - ppx) * z / fx,
             (y - ppy) * z / fy,
-            z
+            z + z_offset
         )
 
 

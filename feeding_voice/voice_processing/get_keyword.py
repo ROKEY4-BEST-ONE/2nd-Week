@@ -40,27 +40,23 @@ class GetKeyword(Node):
         )
 
         prompt_content = """
-            당신은 사용자의 문장에서 특정 도구와 목적지를 추출해야 합니다.
+            당신은 사용자의 문장에서 특정 음식 추출해야 합니다.
             <목표>
-            - 문장에서 다음 리스트에 포함된 도구를 최대한 정확히 추출하세요.
-            - 문장에 등장하는 도구의 목적지(어디로 옮기라고 했는지)도 함께 추출하세요.
-            <도구 리스트>
-            # :둥근_압핀: 여기에 새로운 객체들을 추가합니다.
-            - hammer, screwdriver, wrench, pos1, pos2, pos3, apple, lips
+            - 문장에서 다음 리스트에 포함된 음식을 최대한 정확히 추출하세요.
+            <음식 리스트>
+            - apple, rice
             <출력 형식>
-            - 다음 형식을 반드시 따르세요: [도구 / 목적지]
-            # ... (기존 내용과 동일) ...
+            - 다음 형식을 반드시 따르세요: [음식]
             <특수 규칙>
-            - "가져다 줘", "나에게 줘"와 같이 목적지가 명시되지 않은 명령은 목적지를 "lips"로 간주하여 반환하세요.
-            - 명확한 도구 명칭이 없지만 문맥상 유추 가능한 경우(예: "못 박는 것" → hammer)는 리스트 내 항목으로 최대한 추론해 반환하세요.
-            - 다수의 도구와 목적지가 동시에 등장할 경우 각각에 대해 정확히 매칭하여 순서대로 출력하세요.
+            - 음식이 여러 개 등장하면 처음 언급된 음식만 추출하세요.
+            - 음식 이름을 정확히 언급하지 않더라도 최대한 유추하여 추출하세요 ('사과' -> 'apple')
             <예시>
-            # ... (기존 예시들) ...
-            # :둥근_압핀: 새로운 규칙을 위한 예시를 추가합니다.
-            - 입력: "사과를 가져다 줘"
-            출력: apple / lips
+            - 입력: "사과 줘"
+            출력: apple
             - 입력: "사과를 내 입으로 가져와"
-            출력: apple / lips
+            출력: apple
+            - 입력: "밥 줘"
+            출력: rice
             <사용자 입력>
             "{user_input}"               
         """
@@ -97,15 +93,11 @@ class GetKeyword(Node):
         response = self.lang_chain.invoke({"user_input": output_message})
         result = response["text"]
 
-        object, target = result.strip().split("/")
+        food = result.strip()
 
-        object = object.split()
-        target = target.split()
-
-        print(f"llm's response: {object}")
-        print(f"object: {object}")
-        print(f"target: {target}")
-        return object
+        print(f"llm's response: {food}")
+        print(f"object: {food}")
+        return food
     
     def get_keyword(self, request, response):  # 요청과 응답 객체를 받아야 함
         try:
@@ -128,7 +120,7 @@ class GetKeyword(Node):
 
         # 응답 객체 설정
         response.success = True
-        response.message = " ".join(keyword)  # 감지된 키워드를 응답 메시지로 반환
+        response.message = keyword  # 감지된 키워드를 응답 메시지로 반환
         return response
 
 
