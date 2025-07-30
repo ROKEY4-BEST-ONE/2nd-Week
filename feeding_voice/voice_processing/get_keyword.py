@@ -113,7 +113,8 @@ class GetKeyword(Node):
             pass
 
         # STT --> Keword Extract --> Embedding
-        output_message = self.stt.speech2text()
+        # output_message = self.stt.speech2text()
+        output_message = 'rice'
         keyword = self.extract_keyword(output_message)
 
         self.get_logger().warn(f"Detected tools: {keyword}")

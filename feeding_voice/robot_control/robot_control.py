@@ -95,6 +95,7 @@ class RobotController(Node):
                 return
             self.pick_food(pick_pos)
             # 3. 먹이기 (카메라로 '입술' 찾기)
+            self.ready_to_feed_robot()
             feed_pos = self.get_object_position_from_camera(feed_destination)
             if feed_pos is None:
                 self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
@@ -187,7 +188,6 @@ class RobotController(Node):
         self.get_logger().info("Pick 완료.")
         JReady = [0, 0, 90, 0, 90, 0]
         movej(JReady, vel=VELOCITY, acc=ACC)
-        self.ready_to_feed_robot()
         # :둥근_압핀: 안전을 위해 입술 근처 Z축에 오프셋을 둘 수 있습니다.
         # place_pos_safe = place_pos[:]
         # place_pos_safe[2] += 50.0 # Z축으로 5cm 위까지만 접근

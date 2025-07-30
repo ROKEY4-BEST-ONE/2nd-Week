@@ -1,9 +1,10 @@
 import numpy as np
 import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.node import Node
-from typing import Any, Callable, Optional, Tuple
 
 from ament_index_python.packages import get_package_share_directory
+from hh_od_msg.msg import MsgLipsDepthPosition
 from hh_od_msg.srv import SrvDepthPosition
 from object_detection.realsense import ImgNode
 from object_detection.yolo import YoloModel
@@ -17,10 +18,17 @@ class ObjectDetectionNode(Node):
     def __init__(self, model_name = 'yolo'):
         super().__init__('object_detection_node')
         self.img_node = ImgNode()
-        self.model = self._load_model(model_name)
+        self.lips_model = self._load_model(model_name, 'lips')
         self.intrinsics = self._wait_for_valid_data(
             self.img_node.get_camera_intrinsic, "camera intrinsics"
         )
+        self.publisher_ = self.create_publisher(
+            MsgLipsDepthPosition,
+            'lips_3d_position',
+            10
+        )
+        timer_period = 0.5
+        self.timer = self.create_timer(timer_period, self.timer_callback)
         self.create_service(
             SrvDepthPosition,
             'get_3d_position',
@@ -28,24 +36,39 @@ class ObjectDetectionNode(Node):
         )
         self.get_logger().info("ObjectDetectionNode initialized.")
 
-    def _load_model(self, name):
+    def _load_model(self, name, target):
         """모델 이름에 따라 인스턴스를 반환합니다."""
+        if target == 'pikachu' or target == 'Bulbasaur':
+            category = 'pokemon'
+        else:
+            category = target
         if name.lower() == 'yolo':
-            return YoloModel()
+            return YoloModel(category)
         raise ValueError(f"Unsupported model: {name}")
+    
+    def timer_callback(self):
+        msg = MsgLipsDepthPosition()
+        coords = self._compute_position('lips', True)
+        msg.depth_position = [float(x) for x in coords]
+        self.publisher_.publish(msg)
 
     def handle_get_depth(self, request, response):
         """클라이언트 요청을 처리해 3D 좌표를 반환합니다."""
+        self.model = self._load_model('yolo', request.target)
         self.get_logger().info(f"Received request: {request}")
-        coords = self._compute_position(request.target)
+        coords = self._compute_position(request.target, False)
         response.depth_position = [float(x) for x in coords]
         return response
 
-    def _compute_position(self, target):
+    def _compute_position(self, target, use_lips_model):
         """이미지를 처리해 객체의 카메라 좌표를 계산합니다."""
+        if use_lips_model:
+            model = self.lips_model
+        else:
+            model = self.model
         rclpy.spin_once(self.img_node)
 
-        box, score = self.model.get_best_detection(self.img_node, target)
+        box, score = model.get_best_detection(self.img_node, target)
         if box is None or score is None:
             self.get_logger().warn("No detection found.")
             return 0.0, 0.0, 0.0
@@ -57,7 +80,7 @@ class ObjectDetectionNode(Node):
             self.get_logger().warn("Depth out of range.")
             return 0.0, 0.0, 0.0
 
-        return self._pixel_to_camera_coords(cx, cy, cz)
+        return self._pixel_to_camera_coords(cx, cy, cz, target)
 
     def _get_depth(self, x, y):
         """픽셀 좌표의 depth 값을 안전하게 읽어옵니다."""
