@@ -12,6 +12,7 @@ from rclpy.action import ActionClient
 import DR_init
 from hh_od_msg.action import TrackLips
 from hh_od_msg.srv import SrvDepthPosition
+from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
@@ -65,7 +66,6 @@ class RobotController(Node):
         self.update_thread = threading.Thread(target=self.update_robot_position, daemon=True)
         self.update_thread.start()
 
-
     def update_robot_position(self):
         """ROS 메인 Executor가 아닌 별도 스레드에서 get_current_posx()를 직접 호출하지 않는다.
         대신 rclpy.spin()이 돌고 있으므로 Timer로 갱신."""
@@ -82,17 +82,22 @@ class RobotController(Node):
         depth_pos = feedback_msg.feedback.depth_position
         if len(depth_pos) < 3:
             return
+        gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
+        robot_posx = get_current_posx()[0]
+        td_coord = self.transform_to_base(depth_pos, gripper2cam_path, robot_posx)
+        if td_coord[2] and sum(td_coord) != 0:
+            td_coord[2] += DEPTH_OFFSET
+            td_coord[2] = max(td_coord[2], MIN_DEPTH)
+        target_pos = list(td_coord[:3]) + robot_posx[3:]
 
-        current_pos = get_current_posx()[0]  # ✅ 직접 호출 (주의: ROS blocking 가능)
-        dist = math.dist(current_pos[:3], depth_pos[:3])
+        dist = math.dist(target_pos[:3], depth_pos[:3])
         if dist < 5.0:  # 5mm 이하 → 이동 생략
             return
 
-        target_pos = list(depth_pos[:3]) + current_pos[3:]
         self.get_logger().info(f"[즉시 이동] {target_pos} (거리 {dist:.2f}mm)")
 
         try:
-            movel(target_pos, vel=20, acc=20, radius=100.0, ra=DR_MV_RA_OVERRIDE)
+            movel(target_pos, vel=VELOCITY, acc=ACC)
         except Exception as e:
             self.get_logger().error(f"이동 중 오류: {e}")
 
@@ -106,7 +111,7 @@ class RobotController(Node):
             self.get_logger().info(f"음성 인식 키워드: '{response_message}'")
             try:
                 food_to_eat = response_message.strip()
-                # feed_destination = 'lips'
+                feed_destination = 'lips'
             except (ValueError, IndexError):
                 self.get_logger().error(f"잘못된 형식의 응답입니다: '{response_message}'. '도구 / 목적지' 형식이 필요합니다.")
                 return
@@ -160,6 +165,12 @@ class RobotController(Node):
                 self.get_logger().info("✅ 입술 근접 완료! init_robot() 수행")
             else:
                 self.get_logger().warn("입술 추적 실패. init_robot() 수행")
+
+            # feed_pos = self.get_object_position_from_camera(feed_destination)
+            # if feed_pos is None:
+            #     self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
+            #     return
+            # self.feed_food(feed_pos)
 
             self.init_robot()
         else:

@@ -88,7 +88,7 @@ class ObjectDetectionNode(Node):
                 success = True
                 break
 
-            time.sleep(1)
+            time.sleep(10)
 
         goal_handle.succeed()
         result = TrackLips.Result()
@@ -160,6 +160,8 @@ class ObjectDetectionNode(Node):
         ppy = self.intrinsics['ppy']
         if target == 'apple':
             z_offset = 60
+        elif target == 'lips':
+            z_offset = -160
         else:
             z_offset = 0
         return (
