@@ -2,12 +2,15 @@ import os
 import time
 import sys
 import math
+import threading
+import queue
 from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 import DR_init
-from hh_od_msg.msg import MsgLipsDepthPosition
+from hh_od_msg.action import TrackLips
 from hh_od_msg.srv import SrvDepthPosition
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
@@ -28,7 +31,7 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, DR_MV_MOD_REL
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, drl_script_stop, DR_MV_MOD_REL, DR_SSTOP
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -41,9 +44,8 @@ class RobotController(Node):
         # :둥근_압핀: 이 작업에서는 미리 정의된 좌표 데이터베이스가 필요 없습니다.
         # self.pose_database = { ... }
         self.init_robot()
-        # Topic Subscriber
-        self.get_lips_position_subscriber = self.create_subscription(MsgLipsDepthPosition, '/lips_3d_position')
         # Service Clients
+        self.track_lips_action_client = ActionClient(self, TrackLips, 'track_lips')
         self.get_position_client = self.create_client(SrvDepthPosition, "/get_3d_position")
         self.get_keyword_client = self.create_client(Trigger, "/get_keyword")
         # Wait for services
@@ -56,6 +58,91 @@ class RobotController(Node):
         self.get_logger().info("모든 서비스가 연결되었습니다.")
         self.get_position_request = SrvDepthPosition.Request()
         self.get_keyword_request = Trigger.Request()
+
+        self.move_queue = queue.Queue(maxsize=1)  # 큐 사이즈 = 1 → 항상 최신 좌표 유지
+        self.stop_thread = False
+        self.pause_thread = True  # 초기에는 대기 상태
+
+        # 워커 스레드 시작
+        self.worker_thread = threading.Thread(target=self.move_worker, daemon=True)
+        self.worker_thread.start()
+
+        self.current_robot_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        # 스레드: 로봇 좌표 갱신
+        self.update_thread = threading.Thread(target=self.update_robot_position, daemon=True)
+        self.update_thread.start()
+        
+        self.command_queue = queue.Queue()
+
+        self.create_timer(0.1, self.process_commands)  # 10Hz
+    
+    def process_commands(self):
+        if not self.command_queue.empty():
+            target_pos = self.command_queue.get()
+            self.get_logger().info(f"[ROS] movel 실행: {target_pos}")
+            try:
+                drl_script_stop(DR_SSTOP)
+                movel(target_pos, vel=20, acc=20)  # ✅ Executor 안에서 실행 → 안전
+            except Exception as e:
+                self.get_logger().error(f"movel 실행 오류: {e}")
+
+
+    def update_robot_position(self):
+        """ROS 메인 Executor가 아닌 별도 스레드에서 get_current_posx()를 직접 호출하지 않는다.
+        대신 rclpy.spin()이 돌고 있으므로 Timer로 갱신."""
+        def update():
+            try:
+                pos = get_current_posx()[0]
+                self.current_robot_pos = pos
+            except Exception as e:
+                self.get_logger().error(f"좌표 갱신 실패: {e}")
+        # ROS Timer 사용 (메인 스레드에서 실행)
+        self.create_timer(0.1, update)  # 10Hz 주기
+
+    def feedback_callback(self, feedback_msg):
+        depth_pos = feedback_msg.feedback.depth_position
+        if len(depth_pos) >= 3:
+            # 큐가 꽉 차면 오래된 값 버리고 새 값 넣음
+            if not self.move_queue.empty():
+                try:
+                    self.move_queue.get_nowait()  # 오래된 좌표 버림
+                except queue.Empty:
+                    pass
+            self.move_queue.put(depth_pos)
+
+    def move_worker(self):
+        while not self.stop_thread:
+            if self.pause_thread:
+                time.sleep(0.1)
+                continue
+            try:
+                depth_pos = self.move_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            current_pos = self.current_robot_pos
+            dist = math.dist(current_pos[:3], depth_pos[:3])
+            if dist < 5.0:
+                continue
+
+            target_pos = list(depth_pos[:3]) + current_pos[3:]
+            self.get_logger().info(f"[워커] 이동 요청 추가: {target_pos}")
+            self.command_queue.put(target_pos)  # ✅ ROS API 대신 큐에 넣기
+
+
+    def start_tracking(self):
+        self.pause_thread = False  # 워커 활성화
+        self.get_logger().info("[워커] 활성화")
+
+    def stop_tracking(self):
+        self.pause_thread = True  # 워커 비활성화
+        self.get_logger().info("[워커] 비활성화")
+
+    def shutdown_worker(self):
+        self.stop_thread = True
+        self.worker_thread.join()
+
     def robot_control(self):
         self.get_logger().info("="*50)
         self.get_logger().info("음성 명령을 기다립니다. 'Hello Rokey'라고 말하고 명령하세요.")
@@ -66,27 +153,27 @@ class RobotController(Node):
             self.get_logger().info(f"음성 인식 키워드: '{response_message}'")
             try:
                 food_to_eat = response_message.strip()
-                feed_destination = 'lips'
+                # feed_destination = 'lips'
             except (ValueError, IndexError):
                 self.get_logger().error(f"잘못된 형식의 응답입니다: '{response_message}'. '도구 / 목적지' 형식이 필요합니다.")
                 return
-            # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
-            if food_to_eat == 'rice':
-                self.ready_to_pick_tool()
-                tool_name = 'spoon'
-                pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
-                if pick_tool_pos is None:
-                    self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
-                    return
-                amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
-                movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-                mwait()
-                movel([0, 0, -70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-                gripper.close_gripper()
-                while gripper.get_status()[0]:
-                    time.sleep(0.1)
-                movel([0, 0, 110, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-                movej([0, 0, 90, 0, 90, -90], vel=VELOCITY, acc=ACC)
+            # # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
+            # if food_to_eat == 'rice':
+            #     self.ready_to_pick_tool()
+            #     tool_name = 'spoon'
+            #     pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
+            #     if pick_tool_pos is None:
+            #         self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
+            #         return
+            #     amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
+            #     movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            #     mwait()
+            #     movel([0, 0, -70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            #     gripper.close_gripper()
+            #     while gripper.get_status()[0]:
+            #         time.sleep(0.1)
+            #     movel([0, 0, 110, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            #     movej([0, 0, 90, 0, 90, -90], vel=VELOCITY, acc=ACC)
             # 2. Pick 위치 (카메라로 '사과' 찾기)
             self.get_logger().info(f"--- Pick 대상 '{food_to_eat}' 위치 찾는 중 ---")
             pick_pos = self.get_object_position_from_camera(food_to_eat)
@@ -96,14 +183,39 @@ class RobotController(Node):
             self.pick_food(pick_pos)
             # 3. 먹이기 (카메라로 '입술' 찾기)
             self.ready_to_feed_robot()
-            feed_pos = self.get_object_position_from_camera(feed_destination)
-            if feed_pos is None:
-                self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
+            self.get_logger().info("입술 추적 시작...")
+
+            self.start_tracking()  # 워커 활성화
+
+            self.track_lips_action_client.wait_for_server()
+            goal_msg = TrackLips.Goal()
+            send_goal_future = self.track_lips_action_client.send_goal_async(
+                goal_msg,
+                feedback_callback=self.feedback_callback
+            )
+            rclpy.spin_until_future_complete(self, send_goal_future)
+
+            goal_handle = send_goal_future.result()
+            if not goal_handle.accepted:
+                self.get_logger().error("TrackLips Goal이 거부되었습니다.")
+                self.stop_tracking()
                 return
-            self.feed_food(feed_pos)
+
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(self, result_future)
+            result = result_future.result().result
+
+            self.stop_tracking()  # 추적 비활성화
+
+            if result.success:
+                self.get_logger().info("✅ 입술 근접 완료! init_robot() 수행")
+            else:
+                self.get_logger().warn("입술 추적 실패. init_robot() 수행")
+
             self.init_robot()
         else:
             self.get_logger().warn("키워드 인식에 실패했거나 서비스 호출에 실패했습니다.")
+
     def get_object_position_from_camera(self, target_name):
         self.get_position_request.target = target_name
         self.get_logger().info(f"객체 인식 노드에 '{target_name}'의 3D 위치를 요청합니다.")

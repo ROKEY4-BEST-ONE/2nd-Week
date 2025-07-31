@@ -1,0 +1,8 @@
+# Goal
+float64[] current_depth_position
+---
+# Result
+bool isArrived
+---
+# Feedback
+float64[] final_depth_position
