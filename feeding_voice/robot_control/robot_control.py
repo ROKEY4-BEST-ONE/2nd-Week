@@ -31,7 +31,7 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, drl_script_stop, DR_MV_MOD_REL, DR_SSTOP
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, DR_MV_RA_OVERRIDE, DR_MV_MOD_REL
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -59,33 +59,11 @@ class RobotController(Node):
         self.get_position_request = SrvDepthPosition.Request()
         self.get_keyword_request = Trigger.Request()
 
-        self.move_queue = queue.Queue(maxsize=1)  # 큐 사이즈 = 1 → 항상 최신 좌표 유지
-        self.stop_thread = False
-        self.pause_thread = True  # 초기에는 대기 상태
-
-        # 워커 스레드 시작
-        self.worker_thread = threading.Thread(target=self.move_worker, daemon=True)
-        self.worker_thread.start()
-
         self.current_robot_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         # 스레드: 로봇 좌표 갱신
         self.update_thread = threading.Thread(target=self.update_robot_position, daemon=True)
         self.update_thread.start()
-        
-        self.command_queue = queue.Queue()
-
-        self.create_timer(0.1, self.process_commands)  # 10Hz
-    
-    def process_commands(self):
-        if not self.command_queue.empty():
-            target_pos = self.command_queue.get()
-            self.get_logger().info(f"[ROS] movel 실행: {target_pos}")
-            try:
-                drl_script_stop(DR_SSTOP)
-                movel(target_pos, vel=20, acc=20)  # ✅ Executor 안에서 실행 → 안전
-            except Exception as e:
-                self.get_logger().error(f"movel 실행 오류: {e}")
 
 
     def update_robot_position(self):
@@ -102,46 +80,21 @@ class RobotController(Node):
 
     def feedback_callback(self, feedback_msg):
         depth_pos = feedback_msg.feedback.depth_position
-        if len(depth_pos) >= 3:
-            # 큐가 꽉 차면 오래된 값 버리고 새 값 넣음
-            if not self.move_queue.empty():
-                try:
-                    self.move_queue.get_nowait()  # 오래된 좌표 버림
-                except queue.Empty:
-                    pass
-            self.move_queue.put(depth_pos)
+        if len(depth_pos) < 3:
+            return
 
-    def move_worker(self):
-        while not self.stop_thread:
-            if self.pause_thread:
-                time.sleep(0.1)
-                continue
-            try:
-                depth_pos = self.move_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
+        current_pos = get_current_posx()[0]  # ✅ 직접 호출 (주의: ROS blocking 가능)
+        dist = math.dist(current_pos[:3], depth_pos[:3])
+        if dist < 5.0:  # 5mm 이하 → 이동 생략
+            return
 
-            current_pos = self.current_robot_pos
-            dist = math.dist(current_pos[:3], depth_pos[:3])
-            if dist < 5.0:
-                continue
+        target_pos = list(depth_pos[:3]) + current_pos[3:]
+        self.get_logger().info(f"[즉시 이동] {target_pos} (거리 {dist:.2f}mm)")
 
-            target_pos = list(depth_pos[:3]) + current_pos[3:]
-            self.get_logger().info(f"[워커] 이동 요청 추가: {target_pos}")
-            self.command_queue.put(target_pos)  # ✅ ROS API 대신 큐에 넣기
-
-
-    def start_tracking(self):
-        self.pause_thread = False  # 워커 활성화
-        self.get_logger().info("[워커] 활성화")
-
-    def stop_tracking(self):
-        self.pause_thread = True  # 워커 비활성화
-        self.get_logger().info("[워커] 비활성화")
-
-    def shutdown_worker(self):
-        self.stop_thread = True
-        self.worker_thread.join()
+        try:
+            movel(target_pos, vel=20, acc=20, radius=100.0, ra=DR_MV_RA_OVERRIDE)
+        except Exception as e:
+            self.get_logger().error(f"이동 중 오류: {e}")
 
     def robot_control(self):
         self.get_logger().info("="*50)
@@ -185,8 +138,6 @@ class RobotController(Node):
             self.ready_to_feed_robot()
             self.get_logger().info("입술 추적 시작...")
 
-            self.start_tracking()  # 워커 활성화
-
             self.track_lips_action_client.wait_for_server()
             goal_msg = TrackLips.Goal()
             send_goal_future = self.track_lips_action_client.send_goal_async(
@@ -204,8 +155,6 @@ class RobotController(Node):
             result_future = goal_handle.get_result_async()
             rclpy.spin_until_future_complete(self, result_future)
             result = result_future.result().result
-
-            self.stop_tracking()  # 추적 비활성화
 
             if result.success:
                 self.get_logger().info("✅ 입술 근접 완료! init_robot() 수행")
@@ -285,7 +234,7 @@ class RobotController(Node):
         gripper.open_gripper()
         mwait()
     def ready_to_feed_robot(self):
-        JFeed = [0, 0, 90, -90, 90, -180]
+        JFeed = [0, 30, 90, -90, 90, -150]
         self.get_logger().info("먹이기 자세로 이동합니다.")
         movej(JFeed, vel=VELOCITY, acc=ACC)
     def pick_tool(self, pick_pos):

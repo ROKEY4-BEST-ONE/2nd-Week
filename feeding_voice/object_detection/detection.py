@@ -31,7 +31,7 @@ class ObjectDetectionNode(Node):
             )
 
         # ✅ 최신 로봇 좌표 저장 변수
-        self.current_robot_pos = [0.0, 0.0, 500.0]
+        self.current_robot_pos = [100.0, 0.0, 100.0]
 
         # ✅ 로봇 좌표 Subscriber
         self.create_subscription(Float64MultiArray, '/robot_position', self.robot_pos_callback, 10)
