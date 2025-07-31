@@ -8,6 +8,7 @@ from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.action import ActionClient
 import DR_init
 from hh_od_msg.action import TrackLips
@@ -45,6 +46,8 @@ class RobotController(Node):
         # :둥근_압핀: 이 작업에서는 미리 정의된 좌표 데이터베이스가 필요 없습니다.
         # self.pose_database = { ... }
         self.init_robot()
+        # Current Position Publisher
+        self.pos_publisher = self.create_publisher(Float64MultiArray, '/robot_position', 10)
         # Service Clients
         self.track_lips_action_client = ActionClient(self, TrackLips, 'track_lips')
         self.get_position_client = self.create_client(SrvDepthPosition, "/get_3d_position")
@@ -72,6 +75,9 @@ class RobotController(Node):
         def update():
             try:
                 pos = get_current_posx()[0]
+                pos_msg = Float64MultiArray()
+                pos_msg.data = pos.copy()
+                self.pos_publisher.publish(pos_msg)
                 self.current_robot_pos = pos
             except Exception as e:
                 self.get_logger().error(f"좌표 갱신 실패: {e}")
@@ -258,7 +264,7 @@ class RobotController(Node):
         while gripper.get_status()[0]:
             time.sleep(0.1)
         self.get_logger().info("Pick 완료.")
-        JReady = [0, 0, 90, 0, 90, 0]
+        JReady = [0, 0, 90, 0, 90, -90]
         movej(JReady, vel=VELOCITY, acc=ACC)
         # :둥근_압핀: 안전을 위해 입술 근처 Z축에 오프셋을 둘 수 있습니다.
         # place_pos_safe = place_pos[:]
