@@ -67,6 +67,48 @@ class YoloModel:
         best_det = max(matches, key=lambda x: x["score"])
         return best_det["box"], best_det["score"]
 
+    def get_best_masked_detection(self, img_node, target):
+        rclpy.spin_once(img_node)
+        frames = self.get_frames(img_node)
+        if not frames:
+            print("No frames captured")
+            return None, None, None
+
+        results = self.model(frames, verbose=False)
+        result = results[0]
+
+        if result.masks is None:
+            print("No segmentation masks found.")
+            return None, None, None
+
+        masks = result.masks.data.cpu().numpy()  # shape: [N, H, W]
+        boxes = result.boxes.xyxy.cpu().numpy()  # [N, 4]
+        scores = result.boxes.conf.cpu().numpy()  # [N]
+        labels = result.boxes.cls.cpu().numpy().astype(int)  # [N]
+
+        candidates = []
+        for i, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+            cls_name = self.model.names[label]
+            if cls_name == target:
+                mask = masks[i]
+                area = np.sum(mask)
+                candidates.append({
+                    "box": box,
+                    "mask": mask,
+                    "score": score,
+                    "area": area
+                })
+
+        if not candidates:
+            print(f"No detections found for {target}")
+            return None, None, None
+
+        # 정렬: score 우선, area 차순
+        candidates.sort(key=lambda x: (x["score"], x["area"]), reverse=True)
+
+        best = candidates[0]
+        return best["box"], best["mask"], best["score"]
+
     def _aggregate_detections(self, results, confidence_threshold=0.5, iou_threshold=0.5):
         """
         Fuse raw detection boxes across frames using IoU-based grouping

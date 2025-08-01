@@ -34,4 +34,4 @@ class STT:
 
         # print("STT 결과: ", transcript['text'])
         # return transcript['text']
-        return 'rice'
+        return 'Croissant'

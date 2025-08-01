@@ -7,7 +7,13 @@ find_package(rosidl_default_generators REQUIRED)
 
 # 서비스 인터페이스 생성
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/TrackLips.action"
+  "msg/MsgLipsDepthPosition.msg"
   "srv/SrvDepthPosition.srv"
+  "srv/SrvRiceRichPosition.srv"
+  "srv/SrvRobotPos.srv"
+  "srv/SrvCheckStop.srv"
+  "srv/SrvStartToTrack.srv"
 )
 
 # 런타임 의존성 내보내기

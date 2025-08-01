@@ -2,13 +2,18 @@ import os
 import time
 import sys
 import math
+import threading
+import queue
 from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.action import ActionClient
 import DR_init
-from hh_od_msg.msg import MsgLipsDepthPosition
-from hh_od_msg.srv import SrvDepthPosition
+from hh_od_msg.action import TrackLips
+from hh_od_msg.srv import SrvDepthPosition, SrvRiceRichPosition, SrvCheckStop
+from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
@@ -28,12 +33,15 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, DR_MV_MOD_REL
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, check_force_condition, set_singularity_handling, \
+                        DR_VAR_VEL, DR_BASE, DR_AXIS_X, DR_AXIS_Y, DR_AXIS_Z, DR_MV_RA_OVERRIDE, DR_MV_MOD_REL, DR_FC_MOD_REL, \
+                        task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
 ########### Gripper Setup. Do not modify this area ############
 gripper = RG(GRIPPER_NAME, TOOLCHARGER_IP, TOOLCHARGER_PORT)
+set_singularity_handling(DR_VAR_VEL)
 ########### Robot Controller ############
 class RobotController(Node):
     def __init__(self):
@@ -41,11 +49,15 @@ class RobotController(Node):
         # :둥근_압핀: 이 작업에서는 미리 정의된 좌표 데이터베이스가 필요 없습니다.
         # self.pose_database = { ... }
         self.init_robot()
-        # Topic Subscriber
-        self.get_lips_position_subscriber = self.create_subscription(MsgLipsDepthPosition, '/lips_3d_position')
+        # # Current Position Publisher
+        # self.pos_publisher = self.create_publisher(Float64MultiArray, '/robot_position', 10)
         # Service Clients
+        self.track_lips_action_client = ActionClient(self, TrackLips, 'track_lips')
+        self.get_rice_rich_position_client = self.create_client(SrvRiceRichPosition, '/get_rice_rich_position')
         self.get_position_client = self.create_client(SrvDepthPosition, "/get_3d_position")
         self.get_keyword_client = self.create_client(Trigger, "/get_keyword")
+        # Service Servers
+        self.check_stop_service = self.create_service(SrvCheckStop, "/check_stop", self.check_stop_callback)
         # Wait for services
         if not self.get_position_client.wait_for_service(timeout_sec=3.0):
             self.get_logger().error("get_3d_position 서비스를 찾을 수 없습니다.")
@@ -55,7 +67,74 @@ class RobotController(Node):
             sys.exit()
         self.get_logger().info("모든 서비스가 연결되었습니다.")
         self.get_position_request = SrvDepthPosition.Request()
+        self.get_rice_rich_position_request = SrvRiceRichPosition.Request()
         self.get_keyword_request = Trigger.Request()
+
+        self.current_robot_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        # # 스레드: 로봇 좌표 갱신
+        # self.update_thread = threading.Thread(target=self.update_robot_position, daemon=True)
+        # self.update_thread.start()
+    
+    def check_stop_callback(self, request, response):
+        coords = request.coords
+        gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
+        robot_posx = get_current_posx()[0]
+        td_coord = self.transform_to_base(coords, gripper2cam_path, robot_posx)
+        if td_coord[2] and sum(td_coord) != 0:
+            td_coord[1] += 180.0
+            td_coord[2] -= 100.0
+            td_coord[2] = max(td_coord[2], MIN_DEPTH)
+
+        dist = math.dist(td_coord[:3], robot_posx[:3])
+        print(td_coord[:3])
+        print(robot_posx[:3])
+        print(f'현재 거리는 {dist} mm 입니다.')
+        if dist < 30.0:  # 5mm 이하 → 이동 생략
+            response.stop = True
+        else:
+            response.stop = False
+        return response
+
+    # def update_robot_position(self):
+    #     """ROS 메인 Executor가 아닌 별도 스레드에서 get_current_posx()를 직접 호출하지 않는다.
+    #     대신 rclpy.spin()이 돌고 있으므로 Timer로 갱신."""
+    #     def update():
+    #         try:
+    #             pos = get_current_posx()[0]
+    #             pos_msg = Float64MultiArray()
+    #             pos_msg.data = pos.copy()
+    #             self.pos_publisher.publish(pos_msg)
+    #             self.current_robot_pos = pos
+    #         except Exception as e:
+    #             self.get_logger().error(f"좌표 갱신 실패: {e}")
+    #     # ROS Timer 사용 (메인 스레드에서 실행)
+    #     self.create_timer(0.1, update)  # 10Hz 주기
+
+    def feedback_callback(self, feedback_msg):
+        depth_pos = feedback_msg.feedback.depth_position
+        if len(depth_pos) < 3:
+            return
+        gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
+        robot_posx = get_current_posx()[0]
+        td_coord = self.transform_to_base(depth_pos, gripper2cam_path, robot_posx)
+        if td_coord[2] and sum(td_coord) != 0:
+            td_coord[1] += 180.0
+            td_coord[2] -= 100.0
+            td_coord[2] = max(td_coord[2], MIN_DEPTH)
+        target_pos = list(td_coord[:3]) + robot_posx[3:]
+
+        dist = math.dist(target_pos[:3], robot_posx[:3])
+        if dist < 5.0:  # 5mm 이하 → 이동 생략
+            return
+
+        self.get_logger().info(f"[즉시 이동] {target_pos} (거리 {dist:.2f}mm)")
+
+        try:
+            amovel(target_pos, vel=VELOCITY, acc=ACC)
+        except Exception as e:
+            self.get_logger().error(f"이동 중 오류: {e}")
+
     def robot_control(self):
         self.get_logger().info("="*50)
         self.get_logger().info("음성 명령을 기다립니다. 'Hello Rokey'라고 말하고 명령하세요.")
@@ -74,6 +153,22 @@ class RobotController(Node):
             if food_to_eat == 'rice':
                 self.ready_to_pick_tool()
                 tool_name = 'spoon'
+                pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('pororo', 'loopy')
+                if pick_tool_pos is None:
+                    self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
+                    return
+                amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
+                movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                mwait()
+                movel([0, 0, -70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                gripper.close_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+                movel([0, 0, 110, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+                movej([10, 0, 90, 0, 90, -170], vel=VELOCITY, acc=ACC)
+            elif food_to_eat == 'Croissant':
+                self.ready_to_pick_tool()
+                tool_name = 'fork'
                 pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
                 if pick_tool_pos is None:
                     self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
@@ -89,21 +184,93 @@ class RobotController(Node):
                 movej([0, 0, 90, 0, 90, -90], vel=VELOCITY, acc=ACC)
             # 2. Pick 위치 (카메라로 '사과' 찾기)
             self.get_logger().info(f"--- Pick 대상 '{food_to_eat}' 위치 찾는 중 ---")
-            pick_pos = self.get_object_position_from_camera(food_to_eat)
-            if pick_pos is None:
-                self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
-                return
-            self.pick_food(pick_pos)
+            if food_to_eat == 'rice':
+                pick_pos = self.get_rice_position_from_camera()
+                if pick_pos is None:
+                    self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
+                    return
+                self.pick_rice_using_spoon(pick_pos)
+                movel([0, 0, -30, 0, 60, 0], vel=VELOCITY//3, acc=ACC//3, mod=DR_MV_MOD_REL)
+                time.sleep(100)
+            elif food_to_eat == 'Croissant':
+                pick_pos = self.get_object_position_from_camera(food_to_eat)
+                if pick_pos is None:
+                    self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
+                    return
+                self.pick_food_using_fork(pick_pos)
+            else:
+                pick_pos = self.get_object_position_from_camera(food_to_eat)
+                if pick_pos is None:
+                    self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
+                    return
+                self.pick_food(pick_pos)
             # 3. 먹이기 (카메라로 '입술' 찾기)
             self.ready_to_feed_robot()
-            feed_pos = self.get_object_position_from_camera(feed_destination)
-            if feed_pos is None:
-                self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
+            self.get_logger().info("입술 추적 시작...")
+
+            self.track_lips_action_client.wait_for_server()
+            goal_msg = TrackLips.Goal()
+            send_goal_future = self.track_lips_action_client.send_goal_async(
+                goal_msg,
+                feedback_callback=self.feedback_callback
+            )
+            rclpy.spin_until_future_complete(self, send_goal_future)
+
+            goal_handle = send_goal_future.result()
+            if not goal_handle.accepted:
+                self.get_logger().error("TrackLips Goal이 거부되었습니다.")
+                self.stop_tracking()
                 return
-            self.feed_food(feed_pos)
+
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(self, result_future)
+            result = result_future.result().result
+
+            self.get_logger().info("✅ 입술 근접 완료! check_force_condition 수행")
+
+            while True:
+                fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
+                fc_cond_y = check_force_condition(DR_AXIS_Y, min=20)
+                fc_cond_z = check_force_condition(DR_AXIS_Z, min=20)
+                if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
+                    print('움직임 감지됨.')
+                    time.sleep(3)
+                    break
+                time.sleep(0.1)
+
+            # feed_pos = self.get_object_position_from_camera(feed_destination)
+            # if feed_pos is None:
+            #     self.get_logger().error(f"'{feed_destination}'을(를) 찾지 못해 작업을 중단합니다.")
+            #     return
+            # self.feed_food(feed_pos)
+
             self.init_robot()
         else:
             self.get_logger().warn("키워드 인식에 실패했거나 서비스 호출에 실패했습니다.")
+
+    def get_rice_position_from_camera(self):
+        self.get_logger().info(f"객체 인식 노드에 'rice'의 3D 위치를 요청합니다.")
+        get_rice_rich_position_future = self.get_rice_rich_position_client.call_async(self.get_rice_rich_position_request)
+        rclpy.spin_until_future_complete(self, get_rice_rich_position_future)
+        if get_rice_rich_position_future.result():
+            result = get_rice_rich_position_future.result().depth_position.tolist()
+            if sum(result) == 0:
+                self.get_logger().warn(f"카메라가 'rice'를 찾지 못했습니다.")
+                return None
+            self.get_logger().info(f"카메라 좌표 수신: {result}")
+            gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
+            robot_posx = get_current_posx()[0]
+            td_coord = self.transform_to_base(result, gripper2cam_path, robot_posx)
+            if td_coord[2] and sum(td_coord) != 0:
+                # td_coord[2] += DEPTH_OFFSET
+                td_coord[2] = max(td_coord[2], MIN_DEPTH)
+            target_pos = list(td_coord[:3]) + robot_posx[3:]
+            target_pos[0] -= 20.0
+            target_pos[1] += 70.0
+            target_pos[2] += 200.0
+            return target_pos
+        return None
+
     def get_object_position_from_camera(self, target_name):
         self.get_position_request.target = target_name
         self.get_logger().info(f"객체 인식 노드에 '{target_name}'의 3D 위치를 요청합니다.")
@@ -119,9 +286,11 @@ class RobotController(Node):
             robot_posx = get_current_posx()[0]
             td_coord = self.transform_to_base(result, gripper2cam_path, robot_posx)
             if td_coord[2] and sum(td_coord) != 0:
-                td_coord[2] += DEPTH_OFFSET
+                # td_coord[2] += DEPTH_OFFSET
                 td_coord[2] = max(td_coord[2], MIN_DEPTH)
             target_pos = list(td_coord[:3]) + robot_posx[3:]
+            if target_name == 'Croissant':
+                target_pos[2] += 150.0
             return target_pos
         return None
 
@@ -159,7 +328,7 @@ class RobotController(Node):
         # midpoint_pos = [midpoint_x, midpoint_y, midpoint_z] + pos1[3:] # 또는 pos2[3:]
 
         self.get_logger().info(f"'{object1_name}'와 '{object2_name}'의 중점: {midpoint_pos}")
-        return midpoint_pos, angle
+        return midpoint_pos, angle        
     
     def init_robot(self):
         JReady = [0, 0, 90, 0, 90, -90]
@@ -173,7 +342,7 @@ class RobotController(Node):
         gripper.open_gripper()
         mwait()
     def ready_to_feed_robot(self):
-        JFeed = [0, 0, 90, -90, 90, -180]
+        JFeed = [0, 30, 90, -90, 90, -150]
         self.get_logger().info("먹이기 자세로 이동합니다.")
         movej(JFeed, vel=VELOCITY, acc=ACC)
     def pick_tool(self, pick_pos):
@@ -186,7 +355,7 @@ class RobotController(Node):
         while gripper.get_status()[0]:
             time.sleep(0.1)
         self.get_logger().info("Pick 완료.")
-        JReady = [0, 0, 90, 0, 90, 0]
+        JReady = [0, 0, 90, 0, 90, -90]
         movej(JReady, vel=VELOCITY, acc=ACC)
         # :둥근_압핀: 안전을 위해 입술 근처 Z축에 오프셋을 둘 수 있습니다.
         # place_pos_safe = place_pos[:]
@@ -196,6 +365,16 @@ class RobotController(Node):
         # gripper.open_gripper()
         # while gripper.get_status()[0]:
         #     time.sleep(0.1)
+    
+    def pick_rice_using_spoon(self, pick_pos):
+        movel(pick_pos, vel=VELOCITY, acc=ACC)
+    
+    def pick_food_using_fork(self, pick_pos):
+        movel(pick_pos, vel=VELOCITY, acc=ACC)
+        self.detecting()
+        time.sleep(0.3)
+        movel([0, 0, 70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+
     def feed_food(self, feed_pos):
         self.get_logger().info(f"Pick 위치로 이동: {feed_pos[:3]}")
         movel(feed_pos, vel=VELOCITY, acc=ACC)
@@ -214,6 +393,21 @@ class RobotController(Node):
         base2cam = base2gripper @ gripper2cam
         td_coord = np.dot(base2cam, coord)
         return td_coord[:3]
+    def detecting(self):
+        task_compliance_ctrl(stx=[500, 500, 500, 100, 100, 100])
+        time.sleep(0.1)
+
+        set_desired_force(fd=[0, 0, -40, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
+
+        while not check_force_condition(DR_AXIS_Z, max=20):
+            time.sleep(0.5)
+            pass
+
+        release_force()
+        time.sleep(0.1)
+            
+        release_compliance_ctrl()
+        time.sleep(0.1)
 def main(args=None):
     node = RobotController()
     try:

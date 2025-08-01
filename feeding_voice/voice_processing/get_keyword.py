@@ -2,7 +2,7 @@
 
 import os
 import rclpy
-import pyaudio
+import pyaudio, time
 from rclpy.node import Node
 
 from ament_index_python.packages import get_package_share_directory
@@ -44,7 +44,7 @@ class GetKeyword(Node):
             <목표>
             - 문장에서 다음 리스트에 포함된 음식을 최대한 정확히 추출하세요.
             <음식 리스트>
-            - apple, rice
+            - apple, rice, Croissant
             <출력 형식>
             - 다음 형식을 반드시 따르세요: [음식]
             <특수 규칙>
@@ -109,12 +109,12 @@ class GetKeyword(Node):
             self.get_logger().error("please check your device index")
             return None
 
-        while not self.wakeup_word.is_wakeup():
-            pass
+        # while not self.wakeup_word.is_wakeup():
+        #     pass
+        time.sleep(5)
 
         # STT --> Keword Extract --> Embedding
-        # output_message = self.stt.speech2text()
-        output_message = 'rice'
+        output_message = self.stt.speech2text()
         keyword = self.extract_keyword(output_message)
 
         self.get_logger().warn(f"Detected tools: {keyword}")
