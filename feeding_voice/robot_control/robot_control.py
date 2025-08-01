@@ -33,9 +33,9 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, amovel, check_force_condition, set_singularity_handling, \
+    from DSR_ROBOT2 import movej, movel, movesx, get_current_posx, mwait, amovel, check_force_condition, set_singularity_handling, \
                         DR_VAR_VEL, DR_BASE, DR_AXIS_X, DR_AXIS_Y, DR_AXIS_Z, DR_MV_RA_OVERRIDE, DR_MV_MOD_REL, DR_FC_MOD_REL, \
-                        task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl
+                        task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl, posx
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -190,8 +190,8 @@ class RobotController(Node):
                     self.get_logger().error(f"'{food_to_eat}'을(를) 찾지 못해 작업을 중단합니다.")
                     return
                 self.pick_rice_using_spoon(pick_pos)
-                movel([0, 0, -30, 0, 60, 0], vel=VELOCITY//3, acc=ACC//3, mod=DR_MV_MOD_REL)
-                time.sleep(100)
+                # movel([0, 0, -30, 0, 60, 0], vel=VELOCITY//3, acc=ACC//3, mod=DR_MV_MOD_REL)
+                # time.sleep(100)
             elif food_to_eat == 'Croissant':
                 pick_pos = self.get_object_position_from_camera(food_to_eat)
                 if pick_pos is None:
@@ -265,9 +265,12 @@ class RobotController(Node):
                 # td_coord[2] += DEPTH_OFFSET
                 td_coord[2] = max(td_coord[2], MIN_DEPTH)
             target_pos = list(td_coord[:3]) + robot_posx[3:]
-            target_pos[0] -= 20.0
-            target_pos[1] += 70.0
-            target_pos[2] += 200.0
+            target_pos[0] += -90.0
+            target_pos[1] += 240.0
+            target_pos[2] += 0.0
+            # target_pos[3] += -90
+            # target_pos[4] += -60
+            # target_pos[5] += 90
             return target_pos
         return None
 
@@ -367,8 +370,17 @@ class RobotController(Node):
         #     time.sleep(0.1)
     
     def pick_rice_using_spoon(self, pick_pos):
-        movel(pick_pos, vel=VELOCITY, acc=ACC)
-    
+        movel([0, 0, 0, -90, -60, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+        cur_pos = get_current_posx()[0]
+        movel(pick_pos[:3] + cur_pos[3:], vel=VELOCITY, acc=ACC)
+        movej([0, 0, 0, 0, 0, -90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+        time.sleep(1000)
+        self.detecting(5)
+        movel([0, 0, 2, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+        pos1 = posx([0, 160, -50, -90, -50, 90])
+        pos2 = posx([0, 40, -10, -90, -10, 90])
+        movesx([pos1, pos2], vel=VELOCITY//3, acc=ACC//3, mod=DR_MV_MOD_REL)
+        
     def pick_food_using_fork(self, pick_pos):
         movel(pick_pos, vel=VELOCITY, acc=ACC)
         self.detecting()
@@ -393,11 +405,11 @@ class RobotController(Node):
         base2cam = base2gripper @ gripper2cam
         td_coord = np.dot(base2cam, coord)
         return td_coord[:3]
-    def detecting(self):
+    def detecting(self, fc_cond=40):
         task_compliance_ctrl(stx=[500, 500, 500, 100, 100, 100])
         time.sleep(0.1)
 
-        set_desired_force(fd=[0, 0, -40, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
+        set_desired_force(fd=[0, 0, -fc_cond, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
 
         while not check_force_condition(DR_AXIS_Z, max=20):
             time.sleep(0.5)
