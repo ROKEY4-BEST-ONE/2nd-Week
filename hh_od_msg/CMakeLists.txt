@@ -10,6 +10,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/TrackLips.action"
   "msg/MsgLipsDepthPosition.msg"
   "srv/SrvDepthPosition.srv"
+  "srv/SrvRiceRichPosition.srv"
+  "srv/SrvRobotPos.srv"
+  "srv/SrvCheckStop.srv"
   "srv/SrvStartToTrack.srv"
 )
 
