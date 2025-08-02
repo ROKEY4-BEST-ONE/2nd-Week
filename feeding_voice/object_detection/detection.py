@@ -1,12 +1,10 @@
 import numpy as np
 import cv2
-import rclpy, time, math
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+import rclpy, time
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
 
 from ament_index_python.packages import get_package_share_directory
-from std_msgs.msg import Float64MultiArray
 from hh_od_msg.action import TrackLips
 from hh_od_msg.srv import SrvDepthPosition, SrvRiceRichPosition, SrvCheckStop
 from object_detection.realsense import ImgNode
@@ -30,12 +28,6 @@ class ObjectDetectionNode(Node):
             self.intrinsics = self._wait_for_valid_data(
                 self.img_node.get_camera_intrinsic, "camera intrinsics"
             )
-
-        # # ✅ 최신 로봇 좌표 저장 변수
-        # self.current_robot_pos = [100.0, 0.0, 100.0]
-
-        # # ✅ 로봇 좌표 Subscriber
-        # self.create_subscription(Float64MultiArray, '/robot_position', self.robot_pos_callback, 10)
 
         self._action_server = ActionServer(
             self,
@@ -104,34 +96,12 @@ class ObjectDetectionNode(Node):
                 if check_stop_future.result().stop:
                     break
 
-            # # 로봇 위치와 비교하는 로직 (가정: ROS 토픽 또는 서비스에서 로봇 현재 위치 가져옴)
-            # robot_pos = self._get_robot_position()[:3]  # [x, y, z]
-            # dist = math.dist(robot_pos, coords)
-            # if dist < 50.0:  # threshold (단위는 mm 가정)
-            #     success = True
-            #     break
-
         goal_handle.succeed()
+        success = False
         result = TrackLips.Result()
         result.success = success
         self.get_logger().info(f"Result: success={success}")
         return result
-    
-    # def robot_pos_callback(self, msg):
-    #     """로봇 제어 노드에서 퍼블리시하는 좌표를 최신 값으로 저장"""
-    #     self.current_robot_pos = list(msg.data)
-
-    # def _get_robot_position(self):
-    #     robot_pos_client = self.create_client(SrvRobotPos, "/get_robot_pos")
-    #     if not robot_pos_client.wait_for_service(timeout_sec=3.0):
-    #         self.get_logger().error("get_robot_pos 서비스를 찾을 수 없습니다.")
-    #         return None
-    #     robot_pos_request = SrvRobotPos.Request()
-    #     robot_pos_future = robot_pos_client.call_async(robot_pos_request)
-    #     rclpy.spin_until_future_complete(self, robot_pos_future)
-    #     if robot_pos_future.result():
-    #         return robot_pos_future.result().robot_pos.tolist()
-    #     return None
 
     def cancel_callback(self, goal_handle):
         self.get_logger().info('Goal 취소 요청 수신.')
