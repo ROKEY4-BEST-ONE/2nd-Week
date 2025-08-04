@@ -83,7 +83,7 @@ class ObjectDetectionNode(Node):
             goal_handle.publish_feedback(feedback_msg)
             self.get_logger().info(f"피드백 전송: {feedback_msg.depth_position}")
 
-            time.sleep(0.3)
+            # time.sleep(0.3)
 
             check_stop_client = self.create_client(SrvCheckStop, "/check_stop")
             while not check_stop_client.wait_for_service(timeout_sec=3.0):

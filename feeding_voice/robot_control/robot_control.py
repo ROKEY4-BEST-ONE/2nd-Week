@@ -43,6 +43,7 @@ set_singularity_handling(DR_VAR_VEL)
 class RobotController(Node):
     def __init__(self):
         super().__init__("feeding_voice")
+        time.sleep(3)
         self.init_robot()
 
         # Service Clients
@@ -91,7 +92,7 @@ class RobotController(Node):
             if not pick_tool_success:
                 return
             
-            # 2. Pick 위치 (카메라로 '사과' 찾기)
+            # 2. Pick 위치 (카메라로 음식 찾기)
             pick_food_success = self.pick_food(food_to_eat)
             if not pick_food_success:
                 return
@@ -107,6 +108,7 @@ class RobotController(Node):
     
     def pick_tool_if_needed(self, food_to_eat):
         if food_to_eat == 'rice' or food_to_eat == 'Croissant':
+            gripper.move_gripper(500)
             self.ready_to_pick_tool()
             tool_name = 'spoon' if food_to_eat == 'rice' else 'fork'
             if food_to_eat == 'rice':
@@ -119,6 +121,10 @@ class RobotController(Node):
                 self.init_robot()
                 return False
             
+            pos_tmp = get_current_posx()[0]
+            pos_tmp[2] += 70
+            amovel(pos_tmp, time=1)
+            time.sleep(0.6)
             amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
             movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             mwait()
@@ -133,9 +139,9 @@ class RobotController(Node):
             movel([0, 0, 110, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
 
             if food_to_eat == 'rice':   # find rice pose
-                movej([10, 0, 90, 0, 90, -170], vel=VELOCITY, acc=ACC)
+                movej([10, 0, 90, 0, 90, -170], time=3)
             else:                       # find Croissant pose
-                movej([0, 0, 90, 0, 90, -90], vel=VELOCITY, acc=ACC)
+                movej([0, 0, 90, 0, 90, -90], time=3)
 
         return True
     def pick_food(self, target):
@@ -355,7 +361,6 @@ class RobotController(Node):
     def ready_to_pick_tool(self):
         JPick = [40, 15, 90, 0, 75, 40]
         movej(JPick, vel=VELOCITY, acc=ACC)
-        gripper.open_gripper()
         mwait()
     def ready_to_feed_robot(self):
         JFeed = [0, 30, 90, -90, 90, -150]
