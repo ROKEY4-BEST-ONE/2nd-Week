@@ -13,7 +13,7 @@ from hh_od_msg.srv import SrvDepthPosition, SrvRiceRichPosition, SrvCheckStop
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
-from voice_processing.tts import TTS, NOT_RECOGNIZED
+from voice_processing.tts import TTS, NOT_RECOGNIZED, MENU_INTRODUCING
 package_path = get_package_share_directory("feeding_voice")
 # for single robot
 ROBOT_ID = "dsr01"
@@ -86,6 +86,10 @@ class RobotController(Node):
                 food_to_eat = response_message.strip()
             except (ValueError, IndexError):
                 self.get_logger().error(f"잘못된 형식의 응답입니다: '{response_message}'.")
+                return
+
+            if food_to_eat == 'menu':
+                TTS(MENU_INTRODUCING, '밥, 사과, 크로와상').play()
                 return
             
             # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)

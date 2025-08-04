@@ -4,15 +4,16 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 package_path = get_package_share_directory("feeding_voice")
-tts_file_list = ['not_recognized.mp3']
-# tts_file_list = ['not_recognized.mp3', 'menu_introducing.mp3']
+tts_file_list = ['not_recognized.mp3', 'menu_introducing.mp3']
 
 NOT_RECOGNIZED = 0
-# MENU_INTRODUCING = 1
+MENU_INTRODUCING = 1
 
 class TTS:
-    def __init__(self, condition, target = ''):
-        self.condition = condition
+    def __init__(self, condition, target):
+        if condition not in (NOT_RECOGNIZED, MENU_INTRODUCING):
+            raise Exception(f'Invalid TTS Condition: {condition}')
+        
         if condition == NOT_RECOGNIZED:
             if target == 'rice':
                 subtext = '밥을'
@@ -27,21 +28,18 @@ class TTS:
             elif target == 'apple':
                 subtext = '사과를'
             text = f"카메라가 {subtext} 인식하지 못했습니다."
+        elif condition == MENU_INTRODUCING:
+            text = f"오늘의 메뉴는 {target} 입니다."
+        else:
+            pass
+        
         self.tts = gTTS(text=text, lang='ko', slow=False)
-
-        for filename in tts_file_list:
-            filepath = os.path.join(package_path, "resource", filename)
-            # filepath = os.path.join(os.getcwd(), filename)
-            print(filepath)
-            self.tts.save(filepath)
+        self.filepath = os.path.join(package_path, "resource", tts_file_list[condition])
+        self.tts.save(self.filepath)
     
     def play(self):
-        try:
-            playsound(os.path.join(package_path, "resource", tts_file_list[self.condition]))
-            # playsound(os.path.join(os.getcwd(), tts_file_list[self.condition]))
-        except Exception as e:
-            print(e)
+        playsound(self.filepath)
 
 # if __name__ == '__main__':
-#     tts = TTS(NOT_RECOGNIZED, 'apple')
+#     tts = TTS(MENU_INTRODUCING)
 #     tts.play()
