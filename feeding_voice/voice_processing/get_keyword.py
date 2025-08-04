@@ -40,16 +40,22 @@ class GetKeyword(Node):
         )
 
         prompt_content = """
-            당신은 사용자의 문장에서 특정 음식을 추출해야 합니다.
+            당신은 사용자의 문장에서 특정 단어를 추출해야 합니다.
             <목표>
-            - 문장에서 다음 리스트에 포함된 음식을 최대한 정확히 추출하세요.
+            - 문장에서 다음 리스트에 포함된 단어를 최대한 정확히 추출하세요.
             <음식 리스트>
-            - apple, rice, Croissant
+            - apple, rice, Croissant, menu, return, finish
             <출력 형식>
-            - 다음 형식을 반드시 따르세요: [음식]
+            - 다음 형식을 반드시 따르세요: 단어
             <특수 규칙>
             - 음식이 여러 개 등장하면 처음 언급된 음식만 추출하세요.
             - 음식 이름을 정확히 언급하지 않더라도 최대한 유추하여 추출하세요 ('사과' -> 'apple')
+            - 식사가 끝났다는 뉘앙스의 말을 하면 'finish'를 반환하세요
+            - 먹고 있는 음식을 되돌려 놓으라는 뉘앙스의 말을 하면 'apple'을 반환하세요
+            - 오늘의 메튜를 알려주라는 말을 하면 'menu'를 반환합니다
+            - 전혀 상관 없는 말을 하면 그냥 'menu'를 반환합니다
+            - 빵 갖다 달라 하면 'Croissant'으로 잘 인식해야 합니다
+            - 크루아상 비슷한 발음을 'Croissant'으로 잘 알아들어야 합니다
             <예시>
             - 입력: "사과 줘"
             출력: apple
@@ -59,9 +65,23 @@ class GetKeyword(Node):
             출력: rice
             - 입력: "메뉴 알려줘"
             출력: menu
+            - 입력: "사과 갖다 줘"
+            출력: apple
+            - 입력: "사과 갖다 놔"
+            출력: return
+            - 입력: "다 먹었다"
+            출력: finish
+            - 입력: "크루아상 가져다 줘"
+            출력: Croissant
+            - 입력: "크루아상 갖다 줘"
+            출력: Croissant
+            - 입력: "빵 줘"
+            출력: Croissant
+            - 입력: "빵 갖다 줘"
+            출력: Croissant
             <사용자 입력>
             "{user_input}"               
-        """
+        """ # "다 먹었어" 구현
 
         self.prompt_template = PromptTemplate(
             input_variables=["user_input"], template=prompt_content
@@ -90,6 +110,16 @@ class GetKeyword(Node):
             Trigger, "get_keyword", self.get_keyword
         )
         self.wakeup_word = WakeupWord(mic_config.buffer_size)
+        try:
+            self.mic_controller.open_stream()
+            self.wakeup_word.set_stream(self.mic_controller.stream)
+        except OSError:
+            self.get_logger().error("Error: Failed to open audio stream")
+            self.get_logger().error("please check your device index")
+            return
+
+        while not self.wakeup_word.is_wakeup():
+            pass
 
     def extract_keyword(self, output_message):
         response = self.lang_chain.invoke({"user_input": output_message})
@@ -113,7 +143,7 @@ class GetKeyword(Node):
 
         # while not self.wakeup_word.is_wakeup():
         #     pass
-        time.sleep(5)
+        time.sleep(3)
 
         # STT --> Keword Extract --> Embedding
         output_message = self.stt.speech2text()

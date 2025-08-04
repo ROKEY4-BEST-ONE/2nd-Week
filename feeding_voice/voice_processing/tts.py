@@ -54,6 +54,7 @@ class TTS:
         self.tts = gTTS(text=text, lang='ko', slow=False)
         self.filepath = os.path.join(package_path, "resource", tts_file_list[condition])
         self.tts.save(self.filepath)
+        return self
     
     def play(self):
         playsound(self.filepath)

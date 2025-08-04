@@ -30,8 +30,8 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, movesx, amovel, get_current_posx, mwait, check_force_condition, set_singularity_handling, \
-                        DR_VAR_VEL, DR_BASE, DR_AXIS_X, DR_AXIS_Y, DR_AXIS_Z, DR_MV_MOD_REL, DR_FC_MOD_REL, \
+    from DSR_ROBOT2 import movej, movel, movesx, amovej, amovel, get_current_posx, mwait, check_force_condition, set_singularity_handling, \
+                        DR_VAR_VEL, DR_BASE, DR_AXIS_X, DR_AXIS_Y, DR_AXIS_Z, DR_MV_MOD_REL, DR_FC_MOD_REL, DR_MV_RA_OVERRIDE, \
                         task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl, posx
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
@@ -45,6 +45,7 @@ class RobotController(Node):
     def __init__(self):
         super().__init__("feeding_voice")
         time.sleep(3)
+        # gripper.open_gripper()
         self.init_robot()
 
         # Service Clients
@@ -65,6 +66,13 @@ class RobotController(Node):
             sys.exit()
         self.get_logger().info("모든 서비스가 연결되었습니다.")
 
+        # finish eating
+        self.finish_eating = False
+
+        # Apple Position
+        # self.apple_pos = [283.07900114696037, 57.84975200744409, 182.70377432403575, 88.77001953125, 179.97811889648438, -0.8641782402992249]
+        self.apple_pos = None
+
         # Current Tool
         self.tool = None
         self.tool_original_pose = None
@@ -83,13 +91,69 @@ class RobotController(Node):
             response_message = get_keyword_future.result().message
             self.get_logger().info(f"음성 인식 키워드: '{response_message}'")
             try:
-                food_to_eat = response_message.strip()
+                word = response_message.strip()
+                if word in ['apple', 'rice', 'Croissant']:
+                    food_to_eat = word
+                    TTS().save(DELIVER_FOOD, word).play()
+                elif word == 'finish':
+                    TTS().save(FINISHED_EATING, word).play()
             except (ValueError, IndexError):
                 self.get_logger().error(f"잘못된 형식의 응답입니다: '{response_message}'.")
                 return
 
-            if food_to_eat == 'menu':
+            if word == 'menu':      # 메뉴 알려주기
                 TTS().save(MENU_INTRODUCING, '밥, 사과, 크로와상').play()
+                return
+            
+            if word == 'return':    # 사과 가져다 놓기
+                if self.apple_pos:
+                    self.ready_to_feed_robot()
+                    while True:
+                        fc_cond_x = check_force_condition(DR_AXIS_X, min=5)
+                        fc_cond_y = check_force_condition(DR_AXIS_Y, min=5)
+                        fc_cond_z = check_force_condition(DR_AXIS_Z, min=5)
+                        if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
+                            self.get_logger().info('외력 감지됨.')
+                            break
+                        time.sleep(0.1)
+                    gripper.close_gripper()
+                    while gripper.get_status()[0]:
+                        time.sleep(0.1)
+                    movel(self.apple_pos, vel=VELOCITY, acc=ACC)
+                    self.detecting(10)
+                    gripper.open_gripper()
+                    while gripper.get_status()[0]:
+                        time.sleep(0.1)
+                    self.init_robot()
+                return
+            
+            if word == 'finish':    # 식사 끝
+                pick_pos = self.get_object_position_from_camera('apple')
+                if pick_pos is not None:
+                    self.get_logger().info(f"Pick 위치로 이동: {pick_pos[:3]}")
+                    movel(pick_pos, vel=VELOCITY, acc=ACC)
+                    self.apple_pos = pick_pos
+                    self.apple_pos[2] += 30
+                    self.get_logger().info(f"사과 위치: {self.apple_pos}")
+                    mwait()
+                    gripper.close_gripper()
+                    while gripper.get_status()[0]:
+                        time.sleep(0.1)
+                    movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
+                    movel([100, -180, 0, 0, 0, 0], time=2, mod=DR_MV_MOD_REL)
+                    self.detecting(10)
+                    gripper.open_gripper()
+                    while gripper.get_status()[0]:
+                        time.sleep(0.1)
+                    movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
+                JReady = [0, 0, 90, 0, 90, 0]
+                movej(JReady, vel=VELOCITY, acc=ACC)
+                pos1 = posx([-30, -250, 0, 0, 0, 0])
+                pos2 = posx([0, 0, -210, 0, 0, 0])
+                movesx([pos1, pos2], time=3, mod=DR_MV_MOD_REL)
+                movel([0, 250, 0, 0, 0, 0], time=3, mod=DR_MV_MOD_REL)
+                self.init_robot()
+                self.finish_eating = True
                 return
             
             # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
@@ -104,9 +168,11 @@ class RobotController(Node):
             
             # 3. 먹이기 (카메라로 '입술' 찾기)
             self.feed_food()
-            self.check_eating()
+            self.check_eating(food_to_eat)
 
             # 4. 포지션 복귀
+            JReady = [0, 0, 90, 0, 90, -90]
+            movej(JReady, vel=VELOCITY, acc=ACC)
             self.replace_tool()
         else:
             self.get_logger().warn("키워드 인식에 실패했거나 서비스 호출에 실패했습니다.")
@@ -117,9 +183,15 @@ class RobotController(Node):
             self.ready_to_pick_tool()
             tool_name = 'spoon' if food_to_eat == 'rice' else 'fork'
             if food_to_eat == 'rice':
-                pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('pororo', 'loopy')
+                tmp = self.get_midpoint_of_two_objects('pororo', 'loopy')
             else:
-                pick_tool_pos, pick_tool_angle = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
+                tmp = self.get_midpoint_of_two_objects('Bulbasaur', 'pikachu')
+
+            if tmp is None:
+                self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
+                self.init_robot()
+                return False
+            pick_tool_pos, pick_tool_angle = tmp
 
             if pick_tool_pos is None:
                 self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
@@ -130,8 +202,13 @@ class RobotController(Node):
             pos_tmp[2] += 70
             amovel(pos_tmp, time=1)
             time.sleep(0.6)
+            if pick_tool_angle > 180:
+                pick_tool_angle -= 360
+            elif pick_tool_angle < -180:
+                pick_tool_angle += 360
             amovel(pick_tool_pos, vel=VELOCITY, acc=ACC)
             movej([0, 0, 0, 0, 0, pick_tool_angle], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            self.get_logger().info(f'회전 각도: {pick_tool_angle}')
             mwait()
             movel([0, 0, -70, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             gripper.close_gripper()
@@ -161,11 +238,14 @@ class RobotController(Node):
         # 2. Pick food
         if target == 'rice':
             movel([0, 0, 0, -90, -60, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            movej([0, 0, 0, 0, 0, -90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             cur_pos = get_current_posx()[0]
             movel(pick_pos[:3] + cur_pos[3:], vel=VELOCITY, acc=ACC)
-            movej([0, 0, 0, 0, 0, -90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-            time.sleep(1000)
-            self.detecting(5)
+            # time.sleep(1000)
+            # movel([0, 0, -25, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            pos1 = posx([0, 0, -20, 168.30, 38.71, 168.30])
+            pos2 = posx([40, 0, -10, 168.30, 38.71, 168.30])
+            movesx([pos1, pos2], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             # movel([0, 0, 2, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             # pos1 = posx([0, 160, -50, -90, -50, 90])
             # pos2 = posx([0, 40, -10, -90, -10, 90])
@@ -178,6 +258,9 @@ class RobotController(Node):
         else: # apple
             self.get_logger().info(f"Pick 위치로 이동: {pick_pos[:3]}")
             movel(pick_pos, vel=VELOCITY, acc=ACC)
+            self.apple_pos = pick_pos
+            self.apple_pos[2] += 30
+            self.get_logger().info(f"사과 위치: {self.apple_pos}")
             mwait()
             gripper.close_gripper()
             while gripper.get_status()[0]:
@@ -206,7 +289,7 @@ class RobotController(Node):
 
         result_future = goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, result_future)
-    def check_eating(self):
+    def check_eating(self, food):
         self.get_logger().info("✅ 입술 근접 완료! check_eating 수행")
         while True:
             fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
@@ -214,6 +297,8 @@ class RobotController(Node):
             fc_cond_z = check_force_condition(DR_AXIS_Z, min=20)
             if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
                 self.get_logger().info('외력 감지됨.')
+                if food == 'apple':
+                    gripper.open_gripper()
                 time.sleep(3)
                 break
             time.sleep(0.1)
@@ -275,7 +360,7 @@ class RobotController(Node):
         self.get_logger().info(f"[즉시 이동] {target_pos} (거리 {dist:.2f}mm)")
 
         try:
-            amovel(target_pos, vel=VELOCITY, acc=ACC)
+            amovel(target_pos, vel=VELOCITY*2, acc=ACC*2, ra=DR_MV_RA_OVERRIDE)
         except Exception as e:
             self.get_logger().error(f"이동 중 오류: {e}")
 
@@ -297,9 +382,9 @@ class RobotController(Node):
                 if td_coord[2] and sum(td_coord) != 0:
                     td_coord[2] = max(td_coord[2], MIN_DEPTH)
                 target_pos = list(td_coord[:3]) + robot_posx[3:]
-                target_pos[0] += -90.0
-                target_pos[1] += 240.0
-                target_pos[2] += 0.0
+                target_pos[0] += -65.0
+                target_pos[1] += 280.0
+                target_pos[2] += 40.0
                 return target_pos
         else:
             self.get_position_request.target = target_name
@@ -371,8 +456,9 @@ class RobotController(Node):
         mwait()
     def ready_to_feed_robot(self):
         JFeed = [0, 30, 90, -90, 90, -150]
+        # JFeed = [30, 30, 90, -90, 120, -150]
         self.get_logger().info("먹이기 자세로 이동합니다.")
-        movej(JFeed, vel=VELOCITY, acc=ACC)
+        movej(JFeed, vel=VELOCITY//2, acc=ACC//2)
     
     def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
         R = Rotation.from_euler("ZYZ", [rx, ry, rz], degrees=True).as_matrix()
@@ -388,13 +474,13 @@ class RobotController(Node):
         base2cam = base2gripper @ gripper2cam
         td_coord = np.dot(base2cam, coord)
         return td_coord[:3]
-    def detecting(self, fc_cond=40):
+    def detecting(self, fc_cond=20):
         task_compliance_ctrl(stx=[500, 500, 500, 100, 100, 100])
         time.sleep(0.1)
 
-        set_desired_force(fd=[0, 0, -fc_cond, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
+        set_desired_force(fd=[0, 0, -40, 0, 0, 0], dir=[0, 0, 1, 0, 0, 0], mod=DR_FC_MOD_REL)
 
-        while not check_force_condition(DR_AXIS_Z, max=20):
+        while not check_force_condition(DR_AXIS_Z, max=fc_cond):
             time.sleep(0.5)
             pass
 
@@ -409,6 +495,8 @@ def main(args=None):
     try:
         while rclpy.ok():
             node.robot_control()
+            if node.finish_eating:
+                break
     except KeyboardInterrupt:
         pass
     finally:
