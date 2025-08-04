@@ -13,7 +13,7 @@ from hh_od_msg.srv import SrvDepthPosition, SrvRiceRichPosition, SrvCheckStop
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
-from voice_processing.tts import TTS, NOT_RECOGNIZED, MENU_INTRODUCING
+from voice_processing.tts import TTS, NOT_RECOGNIZED, MENU_INTRODUCING, DELIVER_FOOD, FINISHED_EATING
 package_path = get_package_share_directory("feeding_voice")
 # for single robot
 ROBOT_ID = "dsr01"
@@ -89,7 +89,7 @@ class RobotController(Node):
                 return
 
             if food_to_eat == 'menu':
-                TTS(MENU_INTRODUCING, '밥, 사과, 크로와상').play()
+                TTS().save(MENU_INTRODUCING, '밥, 사과, 크로와상').play()
                 return
             
             # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
@@ -288,7 +288,7 @@ class RobotController(Node):
                 result = get_rice_rich_position_future.result().depth_position.tolist()
                 if sum(result) == 0:
                     self.get_logger().warn(f"카메라가 'rice'를 찾지 못했습니다.")
-                    TTS(NOT_RECOGNIZED, 'rice').play()
+                    TTS().save(NOT_RECOGNIZED, 'rice').play()
                     return None
                 self.get_logger().info(f"카메라 좌표 수신: {result}")
                 gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
@@ -310,7 +310,7 @@ class RobotController(Node):
                 result = get_position_future.result().depth_position.tolist()
                 if sum(result) == 0:
                     self.get_logger().warn(f"카메라가 '{target_name}'을(를) 찾지 못했습니다.")
-                    TTS(NOT_RECOGNIZED, target_name).play()
+                    TTS().save(NOT_RECOGNIZED, target_name).play()
                     return None
                 self.get_logger().info(f"카메라 좌표 수신: {result}")
                 gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
