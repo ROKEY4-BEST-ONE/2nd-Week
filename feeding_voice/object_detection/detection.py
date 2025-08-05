@@ -94,7 +94,7 @@ class ObjectDetectionNode(Node):
                 if check_stop_future.result().stop:
                     break
 
-            time.sleep(1)
+            # time.sleep(1)
 
         goal_handle.succeed()
         success = False

@@ -16,6 +16,7 @@ from voice_processing.MicController import MicController, MicConfig
 
 from voice_processing.wakeup_word import WakeupWord
 from voice_processing.stt import STT
+from voice_processing.tts import TTS, VOICE_RECOGNIZED
 
 ############ Package Path & Environment Setting ############
 current_dir = os.getcwd()
@@ -69,6 +70,8 @@ class GetKeyword(Node):
             출력: apple
             - 입력: "사과 갖다 놔"
             출력: return
+            - 입력: "사과 갖다 놔줘"
+            출력: return
             - 입력: "다 먹었다"
             출력: finish
             - 입력: "크루아상 가져다 줘"
@@ -110,16 +113,16 @@ class GetKeyword(Node):
             Trigger, "get_keyword", self.get_keyword
         )
         self.wakeup_word = WakeupWord(mic_config.buffer_size)
-        try:
-            self.mic_controller.open_stream()
-            self.wakeup_word.set_stream(self.mic_controller.stream)
-        except OSError:
-            self.get_logger().error("Error: Failed to open audio stream")
-            self.get_logger().error("please check your device index")
-            return
+        # try:
+        #     self.mic_controller.open_stream()
+        #     self.wakeup_word.set_stream(self.mic_controller.stream)
+        # except OSError:
+        #     self.get_logger().error("Error: Failed to open audio stream")
+        #     self.get_logger().error("please check your device index")
+        #     return
 
-        while not self.wakeup_word.is_wakeup():
-            pass
+        # while not self.wakeup_word.is_wakeup():
+        #     pass
 
     def extract_keyword(self, output_message):
         response = self.lang_chain.invoke({"user_input": output_message})
@@ -140,14 +143,16 @@ class GetKeyword(Node):
             self.get_logger().error("Error: Failed to open audio stream")
             self.get_logger().error("please check your device index")
             return None
+        
+        while not self.wakeup_word.is_wakeup():
+            pass
 
-        # while not self.wakeup_word.is_wakeup():
-        #     pass
-        time.sleep(3)
+        TTS().save(VOICE_RECOGNIZED, '').play()
 
         # STT --> Keword Extract --> Embedding
         output_message = self.stt.speech2text()
         keyword = self.extract_keyword(output_message)
+        # keyword = self.extract_keyword('rice')
 
         self.get_logger().warn(f"Detected tools: {keyword}")
 

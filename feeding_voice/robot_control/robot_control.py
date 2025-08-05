@@ -30,9 +30,9 @@ rclpy.init()
 dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 try:
-    from DSR_ROBOT2 import movej, movel, movesx, amovej, amovel, get_current_posx, mwait, check_force_condition, set_singularity_handling, \
+    from DSR_ROBOT2 import movej, movel, movesx, move_periodic, amovej, amovel, get_current_posx, mwait, check_force_condition, set_singularity_handling, \
                         DR_VAR_VEL, DR_BASE, DR_AXIS_X, DR_AXIS_Y, DR_AXIS_Z, DR_MV_MOD_REL, DR_FC_MOD_REL, DR_MV_RA_OVERRIDE, \
-                        task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl, posx
+                        task_compliance_ctrl, set_desired_force, release_force, release_compliance_ctrl, posj, posx
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -70,8 +70,8 @@ class RobotController(Node):
         self.finish_eating = False
 
         # Apple Position
-        # self.apple_pos = [283.07900114696037, 57.84975200744409, 182.70377432403575, 88.77001953125, 179.97811889648438, -0.8641782402992249]
-        self.apple_pos = None
+        self.apple_pos = [283.07900114696037, 57.84975200744409, 182.70377432403575, 88.77001953125, 179.97811889648438, -0.8641782402992249]
+        # self.apple_pos = None
 
         # Current Tool
         self.tool = None
@@ -109,9 +109,9 @@ class RobotController(Node):
                 if self.apple_pos:
                     self.ready_to_feed_robot()
                     while True:
-                        fc_cond_x = check_force_condition(DR_AXIS_X, min=5)
-                        fc_cond_y = check_force_condition(DR_AXIS_Y, min=5)
-                        fc_cond_z = check_force_condition(DR_AXIS_Z, min=5)
+                        fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
+                        fc_cond_y = check_force_condition(DR_AXIS_Y, min=20)
+                        fc_cond_z = check_force_condition(DR_AXIS_Z, min=20)
                         if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
                             self.get_logger().info('외력 감지됨.')
                             break
@@ -119,7 +119,7 @@ class RobotController(Node):
                     gripper.close_gripper()
                     while gripper.get_status()[0]:
                         time.sleep(0.1)
-                    movel(self.apple_pos, vel=VELOCITY, acc=ACC)
+                    movel(self.apple_pos, time=3)
                     self.detecting(10)
                     gripper.open_gripper()
                     while gripper.get_status()[0]:
@@ -152,7 +152,51 @@ class RobotController(Node):
                 pos2 = posx([0, 0, -210, 0, 0, 0])
                 movesx([pos1, pos2], time=3, mod=DR_MV_MOD_REL)
                 movel([0, 250, 0, 0, 0, 0], time=3, mod=DR_MV_MOD_REL)
-                self.init_robot()
+                
+                JReady = posj([0, 0, 90, 0, 90, 0])
+                pos_water = posx([577, -72, 320, 125, -180, 35])
+                pos_tissue = posx([576, 83, 209, 128, -180, 38])
+                poses = [
+                    posx([0, 0, 20, 0, 0, 0]),
+                    posx([0, -150, 0, 0, 0, 0]),
+                    posx([-300, 0, 0, 0, 0, 0]),
+                    posx([0, 0, -20, 0, 0, 0])
+                ]
+                pos_tissue_up = posx([0, 0, 200, 0, 0, 0])
+                poses2 = [
+                    posx([0, -300, -100, 0, 0, 0]),
+                    posx([-150, 0, 0, 0, 0, 0]),
+                    posx([0, 0, -100, 0, 0, 0])
+                ]
+
+                movej(JReady, vel=VELOCITY, acc=ACC)
+                movel(pos_water, time=1)
+
+                gripper.close_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+
+                movesx(poses, time=3, mod=DR_MV_MOD_REL)
+
+                gripper.open_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+
+                movej(JReady, vel=VELOCITY, acc=ACC)
+                movel(pos_tissue, time=1)
+                
+                gripper.close_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+
+                movel(pos_tissue_up, time=1, mod=DR_MV_MOD_REL)
+                move_periodic([0, 0, 20, 0, 0, 0], period=0.6, repeat=3)
+                movesx(poses2, time=3, mod=DR_MV_MOD_REL)
+
+                gripper.open_gripper()
+                while gripper.get_status()[0]:
+                    time.sleep(0.1)
+
                 self.finish_eating = True
                 return
             
@@ -167,7 +211,7 @@ class RobotController(Node):
                 return
             
             # 3. 먹이기 (카메라로 '입술' 찾기)
-            self.feed_food()
+            self.feed_food(food_to_eat)
             self.check_eating(food_to_eat)
 
             # 4. 포지션 복귀
@@ -237,7 +281,7 @@ class RobotController(Node):
         
         # 2. Pick food
         if target == 'rice':
-            movel([0, 0, 0, -90, -60, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            amovel([0, 0, 0, -90, -60, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             movej([0, 0, 0, 0, 0, -90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             cur_pos = get_current_posx()[0]
             movel(pick_pos[:3] + cur_pos[3:], vel=VELOCITY, acc=ACC)
@@ -246,6 +290,7 @@ class RobotController(Node):
             pos1 = posx([0, 0, -20, 168.30, 38.71, 168.30])
             pos2 = posx([40, 0, -10, 168.30, 38.71, 168.30])
             movesx([pos1, pos2], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
+            movel([0, 0, 100, -90, -30, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             # movel([0, 0, 2, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             # pos1 = posx([0, 160, -50, -90, -50, 90])
             # pos2 = posx([0, 40, -10, -90, -10, 90])
@@ -270,8 +315,8 @@ class RobotController(Node):
             movej(JReady, vel=VELOCITY, acc=ACC)
 
         return True
-    def feed_food(self):
-        self.ready_to_feed_robot()
+    def feed_food(self, food):
+        self.ready_to_feed_robot(food)
         self.get_logger().info("입술 추적 시작...")
 
         self.track_lips_action_client.wait_for_server()
@@ -382,7 +427,7 @@ class RobotController(Node):
                 if td_coord[2] and sum(td_coord) != 0:
                     td_coord[2] = max(td_coord[2], MIN_DEPTH)
                 target_pos = list(td_coord[:3]) + robot_posx[3:]
-                target_pos[0] += -65.0
+                target_pos[0] += -50.0
                 target_pos[1] += 280.0
                 target_pos[2] += 40.0
                 return target_pos
@@ -454,11 +499,18 @@ class RobotController(Node):
         JPick = [40, 15, 90, 0, 75, 40]
         movej(JPick, vel=VELOCITY, acc=ACC)
         mwait()
-    def ready_to_feed_robot(self):
-        JFeed = [0, 30, 90, -90, 90, -150]
-        # JFeed = [30, 30, 90, -90, 120, -150]
-        self.get_logger().info("먹이기 자세로 이동합니다.")
-        movej(JFeed, vel=VELOCITY//2, acc=ACC//2)
+    def ready_to_feed_robot(self, food='apple'):
+        # JFeed = [0, 30, 90, -90, 90, -150]
+        # self.get_logger().info("먹이기 자세로 이동합니다.")
+        # movej(JFeed, vel=VELOCITY//2, acc=ACC//2)
+        poses = {
+            'apple': posx([322, -166, 364, 90, -90, -90]),
+            'others': posx([325, 63, 366, 90, -90, -90])
+        }
+        if food == 'apple':
+            movel(poses['apple'], time=2)
+        else:
+            movel(poses['others'], time=3)
     
     def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
         R = Rotation.from_euler("ZYZ", [rx, ry, rz], degrees=True).as_matrix()
