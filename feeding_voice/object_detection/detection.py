@@ -49,7 +49,7 @@ class ObjectDetectionNode(Node):
         self.get_logger().info("ObjectDetectionNode initialized.")
 
     def _load_model(self, name, target):
-        """모델 이름에 따라 인스턴스를 반환합니다."""
+        # target을 탐지하기 위한 모델을 load합니다.
         if target == 'pikachu' or target == 'Bulbasaur':
             category = 'pokemon'
         elif target == 'pororo' or target == 'loopy':
@@ -63,6 +63,7 @@ class ObjectDetectionNode(Node):
         raise ValueError(f"Unsupported model: {name}")
 
     async def execute_callback(self, goal_handle):
+        # 입술의 depth position을 액션 피드백으로 전송하는 함수
         self.get_logger().info('Goal 수신. 입술 추적 시작.')
         feedback_msg = TrackLips.Feedback()
         success = False
@@ -104,11 +105,12 @@ class ObjectDetectionNode(Node):
         return result
 
     def cancel_callback(self, goal_handle):
+        # 액션을 취소하는 함수 (사용하지는 않음)
         self.get_logger().info('Goal 취소 요청 수신.')
         return CancelResponse.ACCEPT
     
     def handle_rice_depth(self, request, response):
-        """클라이언트 요청 처리 → 쌀 많은 구역의 카메라 좌표 반환"""
+        # 클라이언트 요청 처리 → 쌀 많은 구역의 카메라 좌표 반환
         self.model = self._load_model('yolo', 'rice')
         self.get_logger().info("Received request: 'rice'")
         coords = self._compute_rice_region_position()
@@ -144,7 +146,7 @@ class ObjectDetectionNode(Node):
         return self._pixel_to_camera_coords(cx, cy, cz, 'rice')
 
     def handle_get_depth(self, request, response):
-        """클라이언트 요청을 처리해 3D 좌표를 반환합니다."""
+        # 클라이언트 요청을 처리해 depth position을 반환합니다.
         self.model = self._load_model('yolo', request.target)
         self.get_logger().info(f"Received request: {request}")
         coords = self._compute_position(request.target)
@@ -152,7 +154,7 @@ class ObjectDetectionNode(Node):
         return response
 
     def _compute_position(self, target):
-        """이미지를 처리해 객체의 카메라 좌표를 계산합니다."""
+        # 이미지를 처리해 객체의 카메라 좌표를 계산합니다.
         rclpy.spin_once(self.img_node)
 
         box, score = self.model.get_best_detection(self.img_node, target)
@@ -170,7 +172,7 @@ class ObjectDetectionNode(Node):
         return self._pixel_to_camera_coords(cx, cy, cz, target)
 
     def _get_depth(self, x, y):
-        """픽셀 좌표의 depth 값을 안전하게 읽어옵니다."""
+        # 픽셀 좌표의 depth 값을 안전하게 읽어옵니다.
         frame = self._wait_for_valid_data(self.img_node.get_depth_frame, "depth frame")
         try:
             return frame[y, x]
@@ -188,7 +190,7 @@ class ObjectDetectionNode(Node):
         return data
 
     def _pixel_to_camera_coords(self, x, y, z, target):
-        """픽셀 좌표와 intrinsics를 이용해 카메라 좌표계로 변환합니다."""
+        # 픽셀 좌표와 intrinsics를 이용해 카메라 좌표계로 변환합니다.
         fx = self.intrinsics['fx']
         fy = self.intrinsics['fy']
         ppx = self.intrinsics['ppx']

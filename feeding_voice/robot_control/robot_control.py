@@ -67,7 +67,7 @@ class RobotController(Node):
         self.get_logger().info("모든 서비스가 연결되었습니다.")
 
         # finish eating
-        self.finish_eating = False
+        self.finish_eating_flag = False
 
         # Apple Position
         self.apple_pos = [283.07900114696037, 57.84975200744409, 182.70377432403575, 88.77001953125, 179.97811889648438, -0.8641782402992249]
@@ -106,98 +106,11 @@ class RobotController(Node):
                 return
             
             if word == 'return':    # 사과 가져다 놓기
-                if self.apple_pos:
-                    self.ready_to_feed_robot()
-                    while True:
-                        fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
-                        fc_cond_y = check_force_condition(DR_AXIS_Y, min=20)
-                        fc_cond_z = check_force_condition(DR_AXIS_Z, min=20)
-                        if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
-                            self.get_logger().info('외력 감지됨.')
-                            break
-                        time.sleep(0.1)
-                    gripper.close_gripper()
-                    while gripper.get_status()[0]:
-                        time.sleep(0.1)
-                    movel(self.apple_pos, time=3)
-                    self.detecting(10)
-                    gripper.open_gripper()
-                    while gripper.get_status()[0]:
-                        time.sleep(0.1)
-                    self.init_robot()
+                self.return_apple()
                 return
             
             if word == 'finish':    # 식사 끝
-                pick_pos = self.get_object_position_from_camera('apple')
-                if pick_pos is not None:
-                    self.get_logger().info(f"Pick 위치로 이동: {pick_pos[:3]}")
-                    movel(pick_pos, vel=VELOCITY, acc=ACC)
-                    self.apple_pos = pick_pos
-                    self.apple_pos[2] += 30
-                    self.get_logger().info(f"사과 위치: {self.apple_pos}")
-                    mwait()
-                    gripper.close_gripper()
-                    while gripper.get_status()[0]:
-                        time.sleep(0.1)
-                    movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
-                    movel([100, -180, 0, 0, 0, 0], time=2, mod=DR_MV_MOD_REL)
-                    self.detecting(10)
-                    gripper.open_gripper()
-                    while gripper.get_status()[0]:
-                        time.sleep(0.1)
-                    movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
-                JReady = [0, 0, 90, 0, 90, 0]
-                movej(JReady, vel=VELOCITY, acc=ACC)
-                pos1 = posx([-30, -250, 0, 0, 0, 0])
-                pos2 = posx([0, 0, -210, 0, 0, 0])
-                movesx([pos1, pos2], time=3, mod=DR_MV_MOD_REL)
-                movel([0, 250, 0, 0, 0, 0], time=3, mod=DR_MV_MOD_REL)
-                
-                JReady = posj([0, 0, 90, 0, 90, 0])
-                pos_water = posx([577, -72, 320, 125, -180, 35])
-                pos_tissue = posx([576, 83, 209, 128, -180, 38])
-                poses = [
-                    posx([0, 0, 20, 0, 0, 0]),
-                    posx([0, -150, 0, 0, 0, 0]),
-                    posx([-300, 0, 0, 0, 0, 0]),
-                    posx([0, 0, -20, 0, 0, 0])
-                ]
-                pos_tissue_up = posx([0, 0, 200, 0, 0, 0])
-                poses2 = [
-                    posx([0, -300, -100, 0, 0, 0]),
-                    posx([-150, 0, 0, 0, 0, 0]),
-                    posx([0, 0, -100, 0, 0, 0])
-                ]
-
-                movej(JReady, vel=VELOCITY, acc=ACC)
-                movel(pos_water, time=1)
-
-                gripper.close_gripper()
-                while gripper.get_status()[0]:
-                    time.sleep(0.1)
-
-                movesx(poses, time=3, mod=DR_MV_MOD_REL)
-
-                gripper.open_gripper()
-                while gripper.get_status()[0]:
-                    time.sleep(0.1)
-
-                movej(JReady, vel=VELOCITY, acc=ACC)
-                movel(pos_tissue, time=1)
-                
-                gripper.close_gripper()
-                while gripper.get_status()[0]:
-                    time.sleep(0.1)
-
-                movel(pos_tissue_up, time=1, mod=DR_MV_MOD_REL)
-                move_periodic([0, 0, 20, 0, 0, 0], period=0.6, repeat=3)
-                movesx(poses2, time=3, mod=DR_MV_MOD_REL)
-
-                gripper.open_gripper()
-                while gripper.get_status()[0]:
-                    time.sleep(0.1)
-
-                self.finish_eating = True
+                self.finish_eating()
                 return
             
             # 1. Pick 위치 (카메라로 숟가락 or 포크 찾기)
@@ -215,16 +128,117 @@ class RobotController(Node):
             self.check_eating(food_to_eat)
 
             # 4. 포지션 복귀
-            JReady = [0, 0, 90, 0, 90, -90]
-            movej(JReady, vel=VELOCITY, acc=ACC)
+            movel([350.937, 3.938, 380.446, 91.590, 179.914, 1.949], time=2.5)
             self.replace_tool()
         else:
             self.get_logger().warn("키워드 인식에 실패했거나 서비스 호출에 실패했습니다.")
     
+    def return_apple(self):
+        ### 먹고 있던 사과를 다시 식판에 가져다 두는 기능 ###
+        if self.apple_pos:
+            self.ready_to_feed_robot()
+            while True:
+                fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
+                fc_cond_y = check_force_condition(DR_AXIS_Y, min=20)
+                fc_cond_z = check_force_condition(DR_AXIS_Z, min=20)
+                if max(fc_cond_x, fc_cond_y, fc_cond_z) == 0:
+                    self.get_logger().info('외력 감지됨.')
+                    break
+                time.sleep(0.1)
+            gripper.close_gripper()
+            while gripper.get_status()[0]:
+                time.sleep(0.1)
+            movel(self.apple_pos, time=3)
+            self.detecting(10)
+            gripper.open_gripper()
+            while gripper.get_status()[0]:
+                time.sleep(0.1)
+            self.init_robot()
+    def finish_eating(self):
+        # 1. 사과가 있다면 밥 칸에 가져다 놓기
+        pick_pos = self.get_object_position_from_camera('apple')
+        if pick_pos is not None:
+            self.get_logger().info(f"Pick 위치로 이동: {pick_pos[:3]}")
+            movel(pick_pos, vel=VELOCITY, acc=ACC)
+            self.apple_pos = pick_pos
+            self.apple_pos[2] += 30
+            self.get_logger().info(f"사과 위치: {self.apple_pos}")
+            mwait()
+            gripper.close_gripper()
+            while gripper.get_status()[0]:
+                time.sleep(0.1)
+            movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
+            movel([100, -180, 0, 0, 0, 0], time=2, mod=DR_MV_MOD_REL)
+            self.detecting(10)
+            gripper.open_gripper()
+            while gripper.get_status()[0]:
+                time.sleep(0.1)
+            movel([0, 0, 50, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
+        # 2. 식판 치우기
+        JReady = [0, 0, 90, 0, 90, 0]
+        movej(JReady, vel=VELOCITY, acc=ACC)
+        pos1 = posx([-30, -250, 0, 0, 0, 0])
+        pos2 = posx([0, 0, -210, 0, 0, 0])
+        movesx([pos1, pos2], time=3, mod=DR_MV_MOD_REL)
+        movel([0, 250, 0, 0, 0, 0], time=3, mod=DR_MV_MOD_REL)
+        
+        # 포지션 설정
+        JReady = posj([0, 0, 90, 0, 90, 0])
+        pos_water = posx([577, -72, 320, 125, -180, 35])
+        pos_tissue = posx([576, 83, 209, 128, -180, 38])
+        poses = [
+            posx([0, 0, 20, 0, 0, 0]),
+            posx([0, -150, 0, 0, 0, 0]),
+            posx([-300, 0, 0, 0, 0, 0]),
+            posx([0, 0, -20, 0, 0, 0])
+        ]
+        pos_tissue_up = posx([0, 0, 200, 0, 0, 0])
+        poses2 = [
+            posx([0, -300, -100, 0, 0, 0]),
+            posx([-150, 0, 0, 0, 0, 0]),
+            posx([0, 0, -100, 0, 0, 0])
+        ]
+
+        # 3. 물병 가져다 주기
+        movej(JReady, vel=VELOCITY, acc=ACC)
+        movel(pos_water, time=2)
+
+        gripper.close_gripper()
+        while gripper.get_status()[0]:
+            time.sleep(0.1)
+
+        movesx(poses, time=3, mod=DR_MV_MOD_REL)
+
+        gripper.open_gripper()
+        while gripper.get_status()[0]:
+            time.sleep(0.1)
+
+        # 4. 티슈 뽑아주기
+        movej(JReady, vel=VELOCITY, acc=ACC)
+        movel(pos_tissue, time=2)
+        
+        gripper.close_gripper()
+        while gripper.get_status()[0]:
+            time.sleep(0.1)
+
+        movel(pos_tissue_up, time=1, mod=DR_MV_MOD_REL)
+        # move_periodic([0, 0, 20, 0, 0, 0], period=0.6, repeat=3)
+        movesx(poses2, time=3, mod=DR_MV_MOD_REL)
+
+        gripper.open_gripper()
+        while gripper.get_status()[0]:
+            time.sleep(0.1)
+        
+        time.sleep(2)
+        self.init_robot()
+
+        # self.finish_eating_flag = True
+
     def pick_tool_if_needed(self, food_to_eat):
+        # 밥을 먹을 땐 숟가락을 집고 크루아상을 먹을 땐 포크를 집음
         if food_to_eat == 'rice' or food_to_eat == 'Croissant':
-            gripper.move_gripper(500)
-            self.ready_to_pick_tool()
+            # gripper.move_gripper(500)
+            self.ready_to_pick_tool(food_to_eat)
             tool_name = 'spoon' if food_to_eat == 'rice' else 'fork'
             if food_to_eat == 'rice':
                 tmp = self.get_midpoint_of_two_objects('pororo', 'loopy')
@@ -235,6 +249,9 @@ class RobotController(Node):
                 self.get_logger().error(f"'{tool_name}'을(를) 찾지 못해 작업을 중단합니다.")
                 self.init_robot()
                 return False
+            
+            # pick_tool_pos: 식기를 잡는 위치
+            # pick_tool_angle: 식기를 집을 때 그리퍼를 얼마의 각도로 틀어야 하는지
             pick_tool_pos, pick_tool_angle = tmp
 
             if pick_tool_pos is None:
@@ -274,7 +291,6 @@ class RobotController(Node):
         # 1. Get position of food
         pick_pos = self.get_object_position_from_camera(target)
         if pick_pos is None:
-            ## TODO 숟가락이나 포크를 들고 있는 상태라면 가져다 둬야 함.
             self.get_logger().error(f"'{target}'을(를) 찾지 못해 작업을 중단합니다.")
             self.replace_tool()
             return False
@@ -285,16 +301,10 @@ class RobotController(Node):
             movej([0, 0, 0, 0, 0, -90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             cur_pos = get_current_posx()[0]
             movel(pick_pos[:3] + cur_pos[3:], vel=VELOCITY, acc=ACC)
-            # time.sleep(1000)
-            # movel([0, 0, -25, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             pos1 = posx([0, 0, -20, 168.30, 38.71, 168.30])
-            pos2 = posx([40, 0, -10, 168.30, 38.71, 168.30])
+            pos2 = posx([60, 0, -10, 168.30, 38.71, 168.30])
             movesx([pos1, pos2], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
             movel([0, 0, 100, -90, -30, 90], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-            # movel([0, 0, 2, 0, 0, 0], vel=VELOCITY, acc=ACC, mod=DR_MV_MOD_REL)
-            # pos1 = posx([0, 160, -50, -90, -50, 90])
-            # pos2 = posx([0, 40, -10, -90, -10, 90])
-            # movesx([pos1, pos2], vel=VELOCITY//3, acc=ACC//3, mod=DR_MV_MOD_REL)
         elif target == 'Croissant':
             movel(pick_pos, vel=VELOCITY, acc=ACC)
             self.detecting()
@@ -316,6 +326,7 @@ class RobotController(Node):
 
         return True
     def feed_food(self, food):
+        # 액션을 이용한 입술 실시간 추적
         self.ready_to_feed_robot(food)
         self.get_logger().info("입술 추적 시작...")
 
@@ -335,6 +346,7 @@ class RobotController(Node):
         result_future = goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, result_future)
     def check_eating(self, food):
+        # 음식을 먹는 사람의 외력을 감지하고 3초 후 다음 동작을 진행
         self.get_logger().info("✅ 입술 근접 완료! check_eating 수행")
         while True:
             fc_cond_x = check_force_condition(DR_AXIS_X, min=20)
@@ -349,10 +361,11 @@ class RobotController(Node):
             time.sleep(0.1)
 
     def replace_tool(self):
+        # 식기를 제자리에 되돌려 놓는 함수
         if self.tool and self.tool_original_pose:
             tool_upper_pose = self.tool_original_pose.copy()
             tool_upper_pose[2] += 110
-            movel(tool_upper_pose, vel=VELOCITY, acc=ACC)
+            movel(tool_upper_pose, time=2.5)
             movel(self.tool_original_pose, vel=VELOCITY, acc=ACC)
             gripper.open_gripper()
             while gripper.get_status()[0]:
@@ -362,27 +375,8 @@ class RobotController(Node):
             self.tool_original_pose = None
         self.init_robot()
 
-    def check_stop_callback(self, request, response):
-        coords = request.coords
-        gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
-        robot_posx = get_current_posx()[0]
-        td_coord = self.transform_to_base(coords, gripper2cam_path, robot_posx)
-        if td_coord[2] and sum(td_coord) != 0:
-            if self.tool:
-                td_coord[1] += 180.0
-            else:
-                td_coord[1] += 50.0
-            td_coord[2] -= 100.0
-            td_coord[2] = max(td_coord[2], MIN_DEPTH)
-
-        dist = math.dist(td_coord[:3], robot_posx[:3])
-        self.get_logger().info(f'현재 거리는 {dist} mm 입니다.')
-        if dist < 30.0:  # 30mm 이하 → 추적 종료
-            response.stop = True
-        else:
-            response.stop = False
-        return response
     def track_lips_feedback_callback(self, feedback_msg):
+        # 입술의 depth position을 액션 피드백으로 받아 입술의 실제 위치를 계산하고 로봇이 이를 추적하게 하는 함수
         depth_pos = feedback_msg.feedback.depth_position
         if len(depth_pos) < 3:
             return
@@ -408,9 +402,30 @@ class RobotController(Node):
             amovel(target_pos, vel=VELOCITY*2, acc=ACC*2, ra=DR_MV_RA_OVERRIDE)
         except Exception as e:
             self.get_logger().error(f"이동 중 오류: {e}")
+    def check_stop_callback(self, request, response):
+        # 로봇의 위치와 입술의 위치가 근접할 때 입술 추적 액션을 멈춤
+        coords = request.coords
+        gripper2cam_path = os.path.join(package_path, "resource", "T_gripper2camera.npy")
+        robot_posx = get_current_posx()[0]
+        td_coord = self.transform_to_base(coords, gripper2cam_path, robot_posx)
+        if td_coord[2] and sum(td_coord) != 0:
+            if self.tool:
+                td_coord[1] += 180.0
+            else:
+                td_coord[1] += 50.0
+            td_coord[2] -= 100.0
+            td_coord[2] = max(td_coord[2], MIN_DEPTH)
 
+        dist = math.dist(td_coord[:3], robot_posx[:3])
+        self.get_logger().info(f'현재 거리는 {dist} mm 입니다.')
+        if dist < 30.0:  # 30mm 이하 → 추적 종료
+            response.stop = True
+        else:
+            response.stop = False
+        return response
+    
     def get_object_position_from_camera(self, target_name):
-        if target_name == 'rice':
+        if target_name == 'rice': # 쌀 푸는 위치를 계산
             self.get_logger().info(f"객체 인식 노드에 'rice'의 3D 위치를 요청합니다.")
             get_rice_rich_position_future = self.get_rice_rich_position_client.call_async(self.get_rice_rich_position_request)
             rclpy.spin_until_future_complete(self, get_rice_rich_position_future)
@@ -428,10 +443,10 @@ class RobotController(Node):
                     td_coord[2] = max(td_coord[2], MIN_DEPTH)
                 target_pos = list(td_coord[:3]) + robot_posx[3:]
                 target_pos[0] += -50.0
-                target_pos[1] += 280.0
-                target_pos[2] += 40.0
+                target_pos[1] += 270.0
+                target_pos[2] += -10.0
                 return target_pos
-        else:
+        else: # 빵이나 사과의 위치를 계산
             self.get_position_request.target = target_name
             self.get_logger().info(f"객체 인식 노드에 '{target_name}'의 3D 위치를 요청합니다.")
             get_position_future = self.get_position_client.call_async(self.get_position_request)
@@ -454,19 +469,21 @@ class RobotController(Node):
                 return target_pos
         return None
     def get_midpoint_of_two_objects(self, object1_name, object2_name):
+        # 식기를 어느 위치에서, 어느 각도로 집어야 하는지 계산하는 함수
+        # 식기의 두 특징점을 이용해 계산함
         self.get_logger().info(f"'{object1_name}'와 '{object2_name}' 두 객체의 중점 위치를 찾습니다.")
 
         pos1 = self.get_object_position_from_camera(object1_name)
-        pos2 = self.get_object_position_from_camera(object2_name)
-        robot_posx = get_current_posx()[0]
-
         if pos1 is None:
             self.get_logger().warn(f"'{object1_name}'을(를) 찾을 수 없어 중점 계산을 할 수 없습니다.")
             return None
         
+        pos2 = self.get_object_position_from_camera(object2_name)
         if pos2 is None:
             self.get_logger().warn(f"'{object2_name}'을(를) 찾을 수 없어 중점 계산을 할 수 없습니다.")
             return None
+        
+        robot_posx = get_current_posx()[0]
 
         # 두 위치 모두 최소 3개의 구성 요소(x, y, z)를 가지고 있는지 확인합니다.
         if len(pos1) < 3 or len(pos2) < 3:
@@ -490,19 +507,23 @@ class RobotController(Node):
         return midpoint_pos, angle        
     
     def init_robot(self):
+        # 준비 자세
         JReady = [0, 0, 90, 0, 90, -90]
         self.get_logger().info("준비 자세로 이동합니다.")
         movej(JReady, vel=VELOCITY, acc=ACC)
         gripper.open_gripper()
         mwait()
-    def ready_to_pick_tool(self):
+    def ready_to_pick_tool(self, food):
+        # 식기를 집기 위한 자세
         JPick = [40, 15, 90, 0, 75, 40]
         movej(JPick, vel=VELOCITY, acc=ACC)
         mwait()
+        if food == 'rice':
+            movel([-35, 0, 0, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
+        else: # Croissant
+            movel([70, 0, 0, 0, 0, 0], time=1, mod=DR_MV_MOD_REL)
     def ready_to_feed_robot(self, food='apple'):
-        # JFeed = [0, 30, 90, -90, 90, -150]
-        # self.get_logger().info("먹이기 자세로 이동합니다.")
-        # movej(JFeed, vel=VELOCITY//2, acc=ACC//2)
+        # 음식을 먹이기 위한 자세
         poses = {
             'apple': posx([322, -166, 364, 90, -90, -90]),
             'others': posx([325, 63, 366, 90, -90, -90])
@@ -547,7 +568,7 @@ def main(args=None):
     try:
         while rclpy.ok():
             node.robot_control()
-            if node.finish_eating:
+            if node.finish_eating_flag:
                 break
     except KeyboardInterrupt:
         pass
